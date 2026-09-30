@@ -20,7 +20,7 @@ Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Ex
 
 ## PowerPoint strictement conforme au thème
 Le plan de la présentation se construit dans la conversation LibreChat ; le serveur garantit la conformité :
-1. L'IA définit avec l'utilisateur l'objectif et le plan, puis propose pour chaque diapo la **disposition du thème** adaptée (chiffres clés, colonnes, équipe, citation, référence client…).
+1. L'IA définit avec l'utilisateur l'objectif et le plan, puis propose pour chaque diapo une **famille de dispositions** adaptée au contenu (chiffres clés, colonnes, équipe, citation, intercalaire, référence client…) et la **déclinaison** voulue : couleur, nombre de colonnes, avec ou sans image ou description.
 2. `list_slide_types("L4,L14,…")` donne les zones de chaque disposition, triées haut → bas et gauche → droite : `#id`, type, position (% de la diapo), capacité estimée (≤ lignes × caractères), texte d'invite = rôle attendu.
 3. `create_powerpoint(dry_run=true)` vérifie le plan : texte trop long, zone inconnue, titre vide, image à insérer. Puis génération.
 
@@ -30,8 +30,16 @@ Garanties :
 - les zones non remplies sont supprimées : aucun texte d'invite ne reste ;
 - les instructions du serveur MCP (envoyées au client) décrivent cette démarche à l'IA.
 
+### Familles et déclinaisons
+Le catalogue regroupe les dispositions par famille : nom avant « - », sans préfixe `1_` ni numéros. Par exemple `Title + 2/3/4 Columns` → « Title + Columns » et `Detailed Section 2 - Magento/Red` → « Detailed Section ». Il indique si les déclinaisons ont les mêmes zones (seul le visuel change) ou non. Une diapo se désigne par `"type":"L31"`, ou par famille et déclinaison : `{"type":"Detailed Section","variant":"2 - Magento"}`. Une déclinaison inconnue renvoie la liste des déclinaisons possibles.
+
 Options :
-- `LAYOUT_GUIDE=/chemin/guide.json` : description d'usage par disposition, affichée dans le catalogue (ex. `{"Key Numbers":"3 chiffres clés avec légende"}`).
+- `LAYOUT_GUIDE=/chemin/guide.json` : usage et/ou famille imposée par disposition, affichés dans le catalogue. Exemple :
+  ```json
+  {"Key Numbers": "3 chiffres clés avec légende",
+   "One liners, Quotes, or small texts - Grayscale": {"famille": "One liners & Quotes", "usage": "citation ou message fort"},
+   "Fiche Reference + Chiffres clés": {"famille": "Fiche Reference"}}
+  ```
 - Modèle à diapos préparées (ex. proposition commerciale) : `template="Proposition"`, diapos désignées par leur n° et dupliquées (décor, images, graphiques conservés). Les post-it de consigne (« EXEMPLE », « À REMPLIR », motif `PPTX_DROP`) sont supprimés. `PPTX_PREPARED_SLIDES=auto|on|off` (auto = tous les modèles sauf ceux dont le nom contient « theme »).
 
 ## Sécurité

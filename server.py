@@ -153,7 +153,11 @@ def make_xlsx(title,sheets,template=""):
 # Aucune forme libre ni mise en forme manuelle : seules les zones prévues par le thème sont remplies.
 RNS="http://schemas.openxmlformats.org/officeDocument/2006/relationships";BODY=(2,4,7);TITLE=(1,3);PIC=18
 PREP=E("PPTX_PREPARED_SLIDES","auto").lower()  # on / off / auto (= sauf modèles dont le nom contient « theme »)
-GUIDE=json.loads(Path(E("LAYOUT_GUIDE")).read_text("utf-8"))if E("LAYOUT_GUIDE")else{}  # {"nom disposition":"quand l'utiliser"}
+GUIDE=json.loads(Path(E("LAYOUT_GUIDE")).read_text("utf-8"))if E("LAYOUT_GUIDE")else{}  # {"nom disposition":"usage" | {"famille":"...","usage":"..."}}
+def _g(n,k):v=GUIDE.get(n);return(v if k=="usage"else None)if isinstance(v,str)else(v or{}).get(k)
+def _fam(n):
+ """Famille d'une disposition : nom avant « - », sans préfixe « 1_ » ni numéros (Title + 2 Columns -> Title + Columns)."""
+ return _g(n,"famille")or re.sub(r"\s+"," ",re.sub(r"\s*\b\d+\b","",re.sub(r"^\d+_","",n).split(" - ")[0])).strip()
 def _walk(shapes):
  for sh in shapes:
   if sh.shape_type==6:yield from _walk(sh.shapes)  # groupe
@@ -194,15 +198,25 @@ def _zdesc(sh,p,key,k,sib=()):
  cpl,nl=_cap(sh,p,sib);t=_txt(sh.text_frame.text)[:60]
  return f"  #{key} {k} {pos} ≤{nl}l×{cpl}c : {t!r}"
 def _yx(sh):return((sh.top or 0)//200000,sh.left or 0)
+def _lz(l):return[(ph,_kind(ph))for ph in sorted(l.placeholders,key=_yx)if int(ph.placeholder_format.type)not in(13,15,16)]
+def _cnt(z):c={};[c.__setitem__(k,c.get(k,0)+1)for _,k in z];return", ".join(f"{v} {k}"for k,v in c.items())or"aucune zone"
 def slide_types(p,tn,detail=None):
- """Dispositions (L n°) et diapos préparées (n°). `detail` : clés à détailler ({"L12","4"})."""
- o=[]
- for i,l in enumerate(p.slide_layouts,1):
-  if detail and f"L{i}"not in detail:continue
-  z=[(ph,_kind(ph))for ph in sorted(l.placeholders,key=_yx)if int(ph.placeholder_format.type)not in(13,15,16)]
-  g=f" — {GUIDE[l.name]}"if l.name in GUIDE else""
-  if not detail:c={};[c.__setitem__(k,c.get(k,0)+1)for _,k in z];o.append(f"L{i}. {l.name}{g} ("+", ".join(f"{v} {k}"for k,v in c.items())+")");continue
-  o.append(f"L{i}. {l.name}{g}\n"+"\n".join(_zdesc(ph,p,ph.placeholder_format.idx,k,[x for x,_ in z])for ph,k in z))
+ """Dispositions groupées par famille (déclinaisons) + diapos préparées. `detail` : clés à détailler ({"L12","4"})."""
+ o=[];F={}
+ for i,l in enumerate(p.slide_layouts,1):F.setdefault(_fam(l.name),[]).append((i,l))
+ if not detail:
+  o.append("Dispositions par famille (choisir la famille selon le contenu, puis la déclinaison) :")
+  for f,V in F.items():
+   sig=[sorted((ph.placeholder_format.idx,k)for ph,k in _lz(l))for _,l in V];same=len(V)>1 and all(x==sig[0]for x in sig)
+   u=next((_g(l.name,"usage")for _,l in V if _g(l.name,"usage")),"");u=f" — {u}"if u else""
+   if len(V)==1:i,l=V[0];o.append(f"- L{i} {l.name}{u} [{_cnt(_lz(l))}]")
+   elif same:o.append(f"- Famille « {f} »{u} : {len(V)} déclinaisons visuelles, mêmes zones [{_cnt(_lz(V[0][1]))}] : "+" · ".join(f"L{i} {l.name}"for i,l in V))
+   else:o.append(f"- Famille « {f} »{u} : "+" · ".join(f"L{i} {l.name} [{_cnt(_lz(l))}]"for i,l in V))
+ else:
+  for i,l in enumerate(p.slide_layouts,1):
+   if f"L{i}"not in detail:continue
+   z=_lz(l);f=_fam(l.name);sib=[x for x,_ in z];V=[f"L{j}"for j,x in F[f]if x is not l]
+   o.append(f"L{i}. {l.name} (famille « {f} »"+(f", autres déclinaisons : {', '.join(V)}"if V else"")+")"+(f" — {_g(l.name,'usage')}"if _g(l.name,"usage")else"")+"\n"+"\n".join(_zdesc(ph,p,ph.placeholder_format.idx,k,sib)for ph,k in z))
  if _prep(tn):
   for i,s in enumerate(p.slides,1):
    if detail and str(i)not in detail:continue
@@ -210,9 +224,9 @@ def slide_types(p,tn,detail=None):
    if not detail:o.append(f"{i}. [diapo préparée] {_stitle(s)} ({len(z)} zones)");continue
    o.append(f"{i}. [diapo préparée] {_stitle(s)}\n"+"\n".join(_zdesc(sh,p,sh.shape_id,k,[x for x,_ in z])for sh,k in z))
  return"\n".join(o)or"Aucune disposition correspondante"
-def _pick(p,S,t,tn,has_table=False):
- """-> ("layout", disposition) ou ("slide", diapo préparée)."""
- L=list(p.slide_layouts);t=""if t is None else str(t).strip()
+def _pick(p,S,t,tn,has_table=False,variant=""):
+ """-> ("layout", disposition) ou ("slide", diapo préparée). `t` : L n°, n°, nom de disposition ou de famille ; `variant` : déclinaison."""
+ L=list(p.slide_layouts);t=""if t is None else str(t).strip();variant=str(variant or"").lower()
  if m:=re.fullmatch(r"[Ll]\s*(\d+)",t):
   if not 1<=int(m[1])<=len(L):raise ValueError(f"Disposition {t} inexistante (L1..L{len(L)})")
   return"layout",L[int(m[1])-1]
@@ -221,9 +235,13 @@ def _pick(p,S,t,tn,has_table=False):
   return"slide",S[int(t)-1]
  if t:
   for l in L:
-   if t.lower()==l.name.lower():return"layout",l
-  for l in L:
-   if t.lower()in l.name.lower():return"layout",l
+   if not variant and t.lower()==l.name.lower():return"layout",l
+  V=[l for l in L if _fam(l.name).lower()==t.lower()]or[l for l in L if t.lower()in l.name.lower()]
+  if variant:
+   W=[l for l in V if variant in l.name.lower()]
+   if not W:raise ValueError(f"Déclinaison « {variant} » introuvable pour « {t} » : "+", ".join(l.name for l in V))
+   V=W
+  if V:return"layout",V[0]
   raise ValueError(f"Disposition « {t} » introuvable (voir list_slide_types)")
  for l in L:  # auto : 1re disposition titre + contenu
   ty={int(ph.placeholder_format.type)for ph in l.placeholders}
@@ -290,7 +308,7 @@ def make_pptx(title,slides,template=""):
  if not slides:raise ValueError("Aucune diapo demandée")
  p.core_properties.title=title;p.core_properties.language=LANG;drop=re.compile(E("PPTX_DROP",r"^\s*(EXEMPLES?\b|[AÀ] REMPLIR|REPRENDRE LES SLIDES)"),re.I)
  for n,d in enumerate(slides,1):
-  tb=d.get("table");kind,src=_pick(p,S,d.get("type"),tn,bool(tb));s=_dup(p,src)if kind=="slide"else p.slides.add_slide(src);w=[]
+  tb=d.get("table");kind,src=_pick(p,S,d.get("type"),tn,bool(tb),d.get("variant"));s=_dup(p,src)if kind=="slide"else p.slides.add_slide(src);w=[]
   Z={str(k).lstrip("#"):v for k,v in(d.get("zones")or{}).items()};done=set();shs=list(_walk(s.shapes))
   key=(lambda x:str(x.shape_id))if kind=="slide"else(lambda x:str(x.placeholder_format.idx)if x.is_placeholder else"")
   if bad:=set(Z)-{key(x)for x in shs}-{x.name for x in shs}:w.append("zones inconnues "+", ".join(f"#{x}"for x in sorted(bad)))
@@ -340,7 +358,7 @@ def make_pptx(title,slides,template=""):
 INSTR="""Serveur de documents conformes aux modèles d'entreprise.
 PowerPoint — démarche à suivre :
 1. Avec l'utilisateur, définir l'objectif, le public et le plan (couverture/ouverture, sommaire, intercalaires de section, contenus, conclusion).
-2. Appeler list_slide_types (liste compacte) puis proposer pour chaque diapo la disposition (L n°) la plus adaptée à son contenu (chiffres clés, colonnes, équipe, citation, référence client…) ; faire valider le plan.
+2. Appeler list_slide_types : les dispositions sont groupées par famille. Choisir pour chaque diapo la famille adaptée au contenu (chiffres clés, colonnes, équipe, citation, intercalaire de section, référence client…), puis la déclinaison : nombre de colonnes, avec/sans image ou description, couleur. Garder des déclinaisons de couleur cohérentes sur toute la présentation (ex. même famille d'intercalaire pour toutes les sections). Faire valider le plan (diapo, famille, déclinaison).
 3. Appeler list_slide_types avec les dispositions retenues ("L4,L13,…") pour connaître leurs zones (#id, position, capacité ≤lignes×caractères, texte d'invite = rôle attendu).
 4. Remplir chaque zone via `zones` en respectant rôle et capacité ; textes courts ; n'utiliser `bullets` que sur les dispositions titre + contenu.
 5. create_powerpoint avec dry_run=true pour vérifier, corriger les alertes (texte trop long, titre vide, zones inconnues), puis générer.
@@ -370,12 +388,12 @@ def create_excel(title:str,sheets:list[dict],filename:str="",template:str="")->s
  _chk(title,sheets);tn,w=make_xlsx(title,sheets,template);return _ret("xlsx",filename or title,tn,w)
 @mcp.tool()
 def list_slide_types(slides:str="",template:str="")->str:
- """Dispositions du thème PowerPoint (L n°) [+ diapos préparées (n°) pour les modèles qui en ont]. Sans `slides` : catalogue compact pour choisir la disposition de chaque diapo. Avec `slides`="L4,L13" : zones de chaque disposition triées haut->bas, gauche->droite (#id, type, @x,y l×h % de la diapo, capacité ≤lignes×caractères, texte d'invite = rôle attendu). `template` : partie du nom du modèle."""
+ """Dispositions du thème PowerPoint (L n°) [+ diapos préparées (n°) pour les modèles qui en ont]. Sans `slides` : catalogue compact groupé par famille (déclinaisons : couleur, colonnes, avec/sans image…) pour choisir la disposition de chaque diapo. Avec `slides`="L4,L13" : zones de chaque disposition triées haut->bas, gauche->droite (#id, type, @x,y l×h % de la diapo, capacité ≤lignes×caractères, texte d'invite = rôle attendu). `template` : partie du nom du modèle."""
  tn,b=latest("pptx",template);det={x.upper()for x in re.findall(r"[Ll]?\d+",slides)}or None
  return f"Modèle {tn}\n"+slide_types(Presentation(_untemplate(b)),tn,det)
 @mcp.tool()
 def create_powerpoint(title:str,slides:list[dict],filename:str="",template:str="",dry_run:bool=False)->str:
- """Crée une présentation (.pptx) strictement conforme au thème : chaque diapo utilise une disposition du thème, dans l'ordre donné. `slides`: [{"type":"L13" (ou nom exact de disposition ; n° = diapo préparée si le modèle en a), "title":"...", "zones":{"#12":"texte" | ["ligne","  sous-ligne"] | [[tableau]]} (ids via list_slide_types), "bullets":[...] (dispositions titre + contenu), "table":[["En-tête","..."],["..."]], "notes":"notes orateur"}]. Zones non remplies supprimées ; **gras** / *italique* acceptés. `dry_run`=true : vérifie le plan sans générer (alertes : texte trop long, zone inconnue, titre vide, image à insérer). `template` : partie du nom du modèle."""
+ """Crée une présentation (.pptx) strictement conforme au thème : chaque diapo utilise une disposition du thème, dans l'ordre donné. `slides`: [{"type":"L13" | nom de disposition | nom de famille (+ "variant":"Magento") ; n° = diapo préparée si le modèle en a, "title":"...", "zones":{"#12":"texte" | ["ligne","  sous-ligne"] | [[tableau]]} (ids via list_slide_types), "bullets":[...] (dispositions titre + contenu), "table":[["En-tête","..."],["..."]], "notes":"notes orateur"}]. Zones non remplies supprimées ; **gras** / *italique* acceptés. `dry_run`=true : vérifie le plan sans générer (alertes : texte trop long, zone inconnue, titre vide, image à insérer). `template` : partie du nom du modèle."""
  _chk(title,slides);tn,p=make_pptx(title,slides,template);wr="\nÀ vérifier : "+" | ".join(p.warnings)if p.warnings else""
  if dry_run:return f"Plan vérifié avec « {tn} » ({len(slides)} diapos)."+(wr or" Aucune alerte.")
  return _ret("pptx",filename or title,tn,p)+wr

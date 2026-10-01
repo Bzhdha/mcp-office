@@ -1,6 +1,6 @@
 """MCP Office: convertit les réponses IA en DOCX/XLSX/PPTX à partir du dernier modèle d'entreprise (SharePoint)."""
 from copy import deepcopy
-import io,os,re,json,time,secrets,zipfile,hmac,httpx,uvicorn
+import io,os,re,json,shutil,time,secrets,zipfile,hmac,httpx,uvicorn
 from pathlib import Path
 from urllib.parse import quote
 from docx import Document
@@ -12,6 +12,7 @@ from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.util import Emu
 from pptx.oxml.ns import qn as pq
+from lxml import etree
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import Response,JSONResponse
 
@@ -90,7 +91,7 @@ def plain(t):return"".join(r[0]for r in runs(t))
 # ---------- Génération ----------
 def _save(kind,name,obj):
  for f in OUT.iterdir():
-  if f.stat().st_mtime<time.time()-TTL:f.unlink(missing_ok=True)
+  if f.stat().st_mtime<time.time()-TTL:shutil.rmtree(f,ignore_errors=True)if f.is_dir()else f.unlink(missing_ok=True)  # dossiers expirés
  tok=secrets.token_urlsafe(24);safe=re.sub(r"[^\w\-. ]","_",name)[:80].strip()or"document"
  d=OUT/tok;d.mkdir();obj.save(d/f"{safe}.{kind}");return f"{BASE}/files/{tok}/{quote(safe)}.{kind}"
 
@@ -188,6 +189,38 @@ def _chain(sh):
   while b is not None:c.append(b);b=getattr(b,"_base_placeholder",None)
  except Exception:pass
  return c
+EMPH=E("PPTX_EMPHASIS_FONT","")  # police des mots mis en valeur (**…**) ; vide = déduite du modèle (variante Medium/Semibold/Bold)
+ANS={"a":"http://schemas.openxmlformats.org/drawingml/2006/main"}
+def _master(sh):
+ pt=sh.part;return pt.slide_layout.slide_master if hasattr(pt,"slide_layout")else pt.slide_master
+def _theme_fonts(m):
+ """(police des titres, police du texte) déclarées par le thème du masque."""
+ try:
+  x=etree.fromstring(next(r.target_part for r in m.part.rels.values()if r.reltype.endswith("/theme")).blob)
+  return x.xpath("string(.//a:majorFont/a:latin/@typeface)",namespaces=ANS),x.xpath("string(.//a:minorFont/a:latin/@typeface)",namespaces=ANS)
+ except Exception:return"",""
+def _tfonts(p):
+ """Polices déclarées par le modèle (thèmes, masques, dispositions)."""
+ if not hasattr(p,"_mf"):
+  f=set()
+  for m in p.slide_masters:
+   f|=set(_theme_fonts(m))
+   for el in[m._element]+[l._element for l in m.slide_layouts]:f|=set(el.xpath(".//a:latin/@typeface"))
+  p._mf={x for x in f if x and not x.startswith("+")}
+ return p._mf
+def _font(sh):
+ """Police effective d'une zone : texte, puis disposition, masque, thème (+mj/+mn résolus)."""
+ m=_master(sh);mj,mn=_theme_fonts(m);ti=_pht(sh)in TITLE;f=None
+ for x in _chain(sh):
+  v=x._element.xpath(".//a:rPr/a:latin/@typeface|.//a:lvl1pPr/a:defRPr/a:latin/@typeface")
+  if v:f=v[0];break
+ if not f:v=m._element.xpath(f"./p:txStyles/p:{'titleStyle'if ti else'bodyStyle'}/a:lvl1pPr/a:defRPr/a:latin/@typeface");f=v[0]if v else("+mj-lt"if ti else"+mn-lt")
+ return mj if f.startswith("+mj")else mn if f.startswith("+mn")else f
+def _emph(font,fonts):
+ """Police de mise en valeur : PPTX_EMPHASIS_FONT, sinon variante plus grasse de la même famille présente dans le modèle."""
+ if EMPH:return EMPH
+ b=re.sub(r"\s+(Thin|Light|Book|Regular|Roman)$","",font or"")
+ return next((f"{b} {w}"for w in("Medium","Semibold","SemiBold","Demibold","Bold")if f"{b} {w}"in fonts and f"{b} {w}"!=font),None)
 def _cap(sh,p,sib=()):
  """(caractères par ligne, lignes) estimés pour une zone (zone extensible : jusqu'à la zone suivante en dessous)."""
  sz=_sz(sh,p);w=(sh.width or 0)/12700-14;h=(sh.height or 0)/12700-7
@@ -203,7 +236,7 @@ def _zdesc(sh,p,key,k,sib=()):
  if k=="table":return f"  #{key} table {pos} {len(sh.table.rows)}x{len(sh.table.columns)} en-tête={[_txt(c.text)for c in sh.table.rows[0].cells][:8]}"
  if k=="image":return f"  #{key} image {pos} (à insérer par l'utilisateur)"
  cpl,nl=_cap(sh,p,sib);t=_txt(sh.text_frame.text)[:60]
- return f"  #{key} {k} {pos} ≤{nl}l×{cpl}c : {t!r}"
+ return f"  #{key} {k} {pos} ≤{nl}l×{cpl}c [{_font(sh)} {_sz(sh,p):g}pt] : {t!r}"
 def _yx(sh):return((sh.top or 0)//200000,sh.left or 0)
 def _lz(l):return[(ph,_kind(ph))for ph in sorted(l.placeholders,key=_yx)if int(ph.placeholder_format.type)not in(13,15,16)]
 def _cnt(z):c={};[c.__setitem__(k,c.get(k,0)+1)for _,k in z];return", ".join(f"{v} {k}"for k,v in c.items())or"diapo fixe, contenu prêt à l'emploi"
@@ -282,8 +315,8 @@ def _dup(p,src):
  for el in list(src.shapes._spTree)[2:]:
   e=deepcopy(el);_remap(e,m);tree.append(e)
  return s
-def _fill(tf,lines):
- """Remplace le texte en gardant la mise en forme du thème (1re ligne existante) ; seuls gras/italique ajoutés."""
+def _fill(tf,lines,emph=None):
+ """Remplace le texte en gardant la mise en forme du thème (1re ligne existante). **…** = police de mise en valeur du modèle (sinon gras), *…* = italique."""
  ps=tf._txBody.findall(pq("a:p"));p0=ps[0]
  r0=p0.find(pq("a:r"));rpr=deepcopy(r0.find(pq("a:rPr")))if r0 is not None and r0.find(pq("a:rPr"))is not None else None
  for x in ps:tf._txBody.remove(x)
@@ -296,11 +329,14 @@ def _fill(tf,lines):
   for x,b_,i_,_ in runs(re.sub(r"^[-*•]\s+","",ln.strip())):
    r=pa.add_run()
    if rpr is not None:r._r.insert(0,deepcopy(rpr))
-   r.text=x;b_ and setattr(r.font,"bold",True);i_ and setattr(r.font,"italic",True)
+   r.text=x;i_ and setattr(r.font,"italic",True)
+   if b_:
+    if emph:r.font.name=emph
+    else:r.font.bold=True
 def _lines(v):return[str(x)for x in v]if isinstance(v,list)else str(v).split("\n")
 def _over(sh,p,lines,sib=()):
  cpl,nl=_cap(sh,p,sib);need=sum(max(1,-(-len(plain(l.strip()))//cpl))for l in lines);return need>nl and f"{need} lignes pour {nl} disponibles"
-def _table(t,rows):
+def _table(t,rows,emph=None):
  nc=len(t.columns);w=max(map(len,rows))
  if 0<w<nc and not t._tbl.xpath(".//a:tc[@gridSpan or @hMerge]"):  # colonnes en trop supprimées, largeur totale conservée
   g=t._tbl.tblGrid;cols=g.findall(pq("a:gridCol"));tot=sum(int(c.get("w"))for c in cols);keep=cols[:w];kw=sum(int(c.get("w"))for c in keep)
@@ -312,7 +348,7 @@ def _table(t,rows):
  while len(t._tbl.tr_lst)<len(rows):t._tbl.append(deepcopy(t._tbl.tr_lst[-1]))
  for x in t._tbl.tr_lst[len(rows):]:t._tbl.remove(x)
  for ri,r in enumerate(rows):
-  for ci in range(nc):_fill(t.cell(ri,ci).text_frame,[str(r[ci])if ci<len(r)else""])
+  for ci in range(nc):_fill(t.cell(ri,ci).text_frame,[str(r[ci])if ci<len(r)else""],emph)
 def make_pptx(title,slides,template=""):
  tn,b=latest("pptx",template);p=Presentation(_untemplate(b));S=list(p.slides);warn=[]
  if not slides:raise ValueError("Aucune diapo demandée")
@@ -323,9 +359,10 @@ def make_pptx(title,slides,template=""):
   key=(lambda x:str(x.shape_id))if kind=="slide"else(lambda x:str(x.placeholder_format.idx)if x.is_placeholder else"")
   if bad:=set(Z)-{key(x)for x in shs}-{x.name for x in shs}:w.append("zones inconnues "+", ".join(f"#{x}"for x in sorted(bad)))
   def put(sh,v):
-   if sh.has_table and isinstance(v,list)and v and isinstance(v[0],list):_table(sh.table,v)
+   em=_emph(_font(sh),_tfonts(p))
+   if sh.has_table and isinstance(v,list)and v and isinstance(v[0],list):_table(sh.table,v,em)
    elif sh.has_text_frame:
-    L=_lines(v);_fill(sh.text_frame,L)
+    L=_lines(v);_fill(sh.text_frame,L,em)
     if o:=_over(sh,p,L,[x for x in shs if x.is_placeholder or x.has_text_frame]):w.append(f"#{key(sh)} trop long ({o})")
    done.add(sh.shape_id)
   for sh in shs:
@@ -340,9 +377,10 @@ def make_pptx(title,slides,template=""):
   big=lambda:sorted(free(lambda x:_pht(x)in BODY and x.has_text_frame),key=lambda x:-(x.width or 0)*(x.height or 0))
   if tb:
    t=free(lambda x:x.has_table)
-   if t:_table(t[0].table,tb);done.add(t[0].shape_id)
+   te=_emph(_theme_fonts(s.slide_layout.slide_master)[1],_tfonts(p))
+   if t:_table(t[0].table,tb,te);done.add(t[0].shape_id)
    elif z:=big():  # tableau posé dans la plus grande zone de contenu (style de tableau par défaut du thème)
-    z=z[0];_table(s.shapes.add_table(len(tb),max(map(len,tb)),z.left,z.top,z.width,z.height).table,tb);z._element.getparent().remove(z._element);done.add(z.shape_id)
+    z=z[0];_table(s.shapes.add_table(len(tb),max(map(len,tb)),z.left,z.top,z.width,z.height).table,tb,te);z._element.getparent().remove(z._element);done.add(z.shape_id)
    else:w.append("aucune zone pour le tableau (ignoré)")
   for v in(d.get("bullets"),d.get("bullets2")):
    if v:
@@ -372,7 +410,7 @@ PowerPoint — démarche à suivre :
 3. Appeler list_slide_types avec les dispositions retenues ("L4,L13,…") pour connaître leurs zones (#id, position, capacité ≤lignes×caractères, texte d'invite = rôle attendu).
 4. Remplir chaque zone via `zones` en respectant rôle et capacité ; textes courts ; n'utiliser `bullets` que sur les dispositions titre + contenu.
 5. create_powerpoint avec dry_run=true pour vérifier, corriger les alertes (texte trop long, titre vide, zones inconnues), puis générer.
-Ne jamais inventer de mise en forme : le thème impose polices, couleurs et positions."""
+Ne jamais inventer de mise en forme : le thème impose polices, couleurs et positions. **…** met des mots importants dans la police de mise en valeur du thème : à réserver à quelques mots-clés."""
 mcp=FastMCP("office-templates",instructions=INSTR,host=E("HOST","0.0.0.0"),port=int(E("PORT","8000")),stateless_http=True)
 def _chk(*a):
  if len(repr(a))>MAXIN:raise ValueError("Contenu trop volumineux")
@@ -400,7 +438,9 @@ def create_excel(title:str,sheets:list[dict],filename:str="",template:str="")->s
 def list_slide_types(slides:str="",template:str="")->str:
  """Dispositions du thème PowerPoint (L n°) [+ diapos préparées (n°) pour les modèles qui en ont]. Sans `slides` : catalogue compact groupé par famille (déclinaisons : couleur, colonnes, avec/sans image…) pour choisir la disposition de chaque diapo. Avec `slides`="L4,L13" : zones de chaque disposition triées haut->bas, gauche->droite (#id, type, @x,y l×h % de la diapo, capacité ≤lignes×caractères, texte d'invite = rôle attendu). `template` : partie du nom du modèle."""
  tn,b=latest("pptx",template);det={x.upper()for x in re.findall(r"[Ll]?\d+",slides)}or None
- return f"Modèle {tn}\n"+slide_types(Presentation(_untemplate(b)),tn,det)
+ p=Presentation(_untemplate(b));mj,mn=_theme_fonts(p.slide_master);F=_tfonts(p)
+ hd=f"Polices du modèle : titres {mj}, texte {mn} ; déclarées : {', '.join(sorted(F))}. Mots importants (**…**) : {_emph(mn,F)or'gras'} (à utiliser avec parcimonie)."
+ return f"Modèle {tn}\n{hd}\n"+slide_types(p,tn,det)
 @mcp.tool()
 def create_powerpoint(title:str,slides:list[dict],filename:str="",template:str="",dry_run:bool=False)->str:
  """Crée une présentation (.pptx) strictement conforme au thème : chaque diapo utilise une disposition du thème, dans l'ordre donné. `slides`: [{"type":"L13" | nom de disposition | nom de famille (+ "variant":"Magento") ; n° = diapo préparée si le modèle en a, "title":"...", "zones":{"#12":"texte" | ["ligne","  sous-ligne"] | [[tableau]]} (ids via list_slide_types), "bullets":[...] (dispositions titre + contenu), "table":[["En-tête","..."],["..."]], "notes":"notes orateur"}]. Zones non remplies supprimées ; **gras** / *italique* acceptés. `dry_run`=true : vérifie le plan sans générer (alertes : texte trop long, zone inconnue, titre vide, image à insérer). `template` : partie du nom du modèle."""

@@ -30,6 +30,11 @@ Garanties :
 - les zones non remplies sont supprimées : aucun texte d'invite ne reste ;
 - les instructions du serveur MCP (envoyées au client) décrivent cette démarche à l'IA.
 
+### Polices
+Le serveur n'impose aucune police : le texte hérite des polices déclarées par le modèle (thème, masques, dispositions). Pour le thème Niji : titres N27 Medium, texte N27 Light, plus N27 et N27 Regular selon les dispositions. Le catalogue (`list_slide_types`) affiche les polices du modèle, et pour chaque zone sa police et sa taille effectives (ex. `[N27 Light 10.5pt]`).
+- `**mots importants**` : écrits dans la police de mise en valeur du modèle, c'est-à-dire la variante plus grasse de la même famille déclarée dans le modèle (N27 Light → N27 Medium, conformément aux consignes de la charte), et non en gras synthétique. Si aucune variante n'existe, le gras est utilisé. `PPTX_EMPHASIS_FONT` permet d'imposer cette police.
+- Les polices ne sont pas embarquées dans les modèles : elles doivent être installées sur les postes qui ouvrent les présentations.
+
 ### Familles et déclinaisons
 Le catalogue regroupe les dispositions par famille : nom avant « - », sans préfixe `1_` ni numéros. Par exemple `Title + 2/3/4 Columns` → « Title + Columns » et `Detailed Section 2 - Magento/Red` → « Detailed Section ». Il indique si les déclinaisons ont les mêmes zones (seul le visuel change) ou non. Une diapo se désigne par `"type":"L31"`, ou par famille et déclinaison : `{"type":"Detailed Section","variant":"2 - Magento"}`. Une déclinaison inconnue renvoie la liste des déclinaisons possibles.
 

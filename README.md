@@ -10,6 +10,10 @@ Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Ex
 | `get_presentation_catalog` | – | diapos PowerPoint autorisées : usage, champs, limites, règles de rédaction (à appeler avant `create_powerpoint`) |
 | `create_powerpoint` | `title`, `slides:[{model, fields, variante, notes}]`, `ambiance` | .pptx + liste des dépassements à corriger |
 | `refresh_template` | – | épingle le dernier modèle PowerPoint et refait l'analyse (sur demande explicite) |
+| `add_slides_link` | – | lien de dépôt (24 h) pour ajouter des diapos de l'utilisateur à son catalogue |
+| `get_slides_report` | `import_id` | écart au modèle de chaque diapo déposée : score, niveau, alertes, champs proposés |
+| `add_user_slides` | `import_id`, `slides:[{diapo, nom, usage, champs}]`, `forcer` | ajoute des diapos au catalogue de l'utilisateur (« Mes diapos ») |
+| `remove_user_slide` | `nom` | retire une diapo de « Mes diapos » |
 | `list_slide_types` | `layouts` (optionnel) | administration : inventaire brut des zones du modèle épinglé |
 | `list_templates` | – | modèles disponibles / utilisé |
 
@@ -40,6 +44,18 @@ Le catalogue a deux parties :
 
 Le modèle n'est donc **ni relu sur SharePoint ni ré-analysé** à chaque génération (≈ 1 s par présentation). Publier un nouveau modèle ne change rien tant que `refresh_template` n'a pas été appelé ; cet outil signale les champs de la configuration qui ne correspondent plus au modèle.
 
+#### Modèle embarqué (prêt au déploiement)
+L'image peut embarquer le modèle et son analyse dans `catalog/bundle/` : au premier démarrage (volume `catalog-state` vide), ils sont recopiés dans `CATALOG_DIR` et le serveur produit des présentations **sans SharePoint ni `TEMPLATE_DIR`**. Le journal de démarrage indique le modèle utilisé. `refresh_template` reste possible ensuite si une source est configurée.
+
+Préparer le paquet avant `docker compose build` (depuis un dossier contenant le `.potx` à jour, ou depuis SharePoint avec les variables `SP_*`) :
+```bash
+TEMPLATE_DIR=/chemin/vers/modeles python server.py bundle
+# → catalog/bundle/<modèle>.potx + catalog/bundle/pptx.json (analyse)
+```
+> ⚠ `catalog/bundle/` est **exclu de Git** : le modèle est un document interne (C2 - restricted) et ce dépôt est public. Il est copié dans l'image au build : ne pas publier l'image sur un registre public (utiliser un registre privé).
+
+Pour livrer un nouveau modèle : refaire `python server.py bundle`, reconstruire l'image, puis **vider le volume** `catalog-state` (`docker compose down -v`) ou appeler `refresh_template`, sinon le modèle déjà épinglé dans le volume est conservé.
+
 Rendu :
 - chaque diapo est la **copie d'une diapo type** du modèle (décor, images, logos conservés) ou une diapo vierge d'une **disposition du thème** (`"source":{"layout":"Pyramid - Grayscale"}`) ; les diapos types d'origine sont retirées ;
 - un champ non fourni retire sa zone (pas de texte d'exemple résiduel) ; `fixed` impose un texte ou supprime une forme (`null`, ex. étiquette « EXEMPLE ») ;
@@ -50,6 +66,31 @@ Rendu :
 - les **dépassements** de limites sont renvoyés au chat avec le lien, pour correction.
 
 Ajouter une diapo au catalogue : `list_slide_types` (ou `layouts=True`) → repérer les zones → ajouter un modèle dans `catalog/pptx.json` → `refresh_template` pour vérifier → contrôler le rendu.
+
+### Diapos de l'utilisateur (« Mes diapos »)
+Un utilisateur peut étendre son catalogue avec des diapos de ses propres présentations, pour générer ensuite des diapos du même type avec un autre contenu.
+
+1. Le chat appelle `add_slides_link` et donne à l'utilisateur un **lien de dépôt** (`/import/<jeton>`, valable 24 h, 50 Mo max) ; l'utilisateur y dépose son `.pptx` depuis le navigateur.
+2. Chaque diapo est **comparée au modèle épinglé** et notée de 0 à 100 ; la page de dépôt et `get_slides_report` affichent le résultat :
+
+   | Écart contrôlé | Pénalité |
+   |---|---|
+   | Disposition absente du modèle d'entreprise | refus |
+   | Contenu non reproductible : graphique, SmartArt, objet incorporé, vidéo | refus |
+   | Polices du thème différentes | 25 |
+   | Couleurs du thème différentes | 3 par couleur (max. 20) |
+   | Police hors charte dans la diapo (ex. Arial) | 15 par police (max. 30) |
+   | Couleur hors palette du modèle (les gris sont neutres) | 10 par couleur (max. 30) |
+   | Format de diapo différent | 20 |
+   | Disposition modifiée par rapport au modèle | 10 |
+   | Formes hors de la diapo | 5 par forme (max. 15) |
+   | Texte de moins de 8 pt | 5 |
+
+   **Niveaux** : *conforme* (≥ 80 et aucune entorse à la charte), *alerte* (< 80, ou police, couleur ou thème hors charte), *refus* (< 60, ou cas bloquant). Seuils modifiables dans `catalog/pptx.json` (`"conformite": {"alerte": 80, "refus": 60}`).
+3. `add_user_slides` ajoute les diapos choisies, avec un nom et un usage. Les zones de texte et tableaux deviennent des **champs** (ordre de lecture, exemple et limite de longueur tirés de la diapo d'origine) ; le chat les renomme d'après leurs exemples (`"champs": {"texte2": "col1_titre"}`). Les numéros décoratifs, formes, images et le reste du décor sont conservés tels quels. Une diapo en **alerte** est ajoutée avec son alerte, rappelée dans le catalogue pour que le chat la signale ; une diapo en **refus** n'est ajoutée qu'avec `forcer=true`, après accord explicite de l'utilisateur.
+4. Ces diapos apparaissent dans `get_presentation_catalog` (rubrique « Mes diapos ») et s'utilisent dans `create_powerpoint` comme les autres. À la génération, la diapo est recopiée dans la présentation (images et liens compris) sur la disposition du modèle de même nom, et les textes saisis reprennent les polices du thème.
+
+**Utilisateur** : identifié par l'en-tête `X-User-Id` transmis par LibreChat (voir configuration), stocké sous forme de hachage ; sans en-tête, le catalogue est commun à tous. Les présentations déposées et les catalogues personnels sont dans le volume `catalog-state` (`users/`, `imports/`).
 
 ### Accessibilité
 Titre et langue du document renseignés, vrais styles de titres, en-tête de tableau répété (Word), tableaux Excel structurés, titre sur chaque diapo, notes orateur.
@@ -79,6 +120,7 @@ POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
 | `FILE_TTL` | `3600` | Durée de validité des fichiers générés (s) |
 | `TEMPLATE_CACHE` | `300` | Durée du cache des modèles (s) |
 | `MAX_INPUT` | `500000` | Taille max. des entrées (caractères) |
+| `MAX_UPLOAD` | `52428800` | Taille max. d'une présentation déposée (octets) |
 | `DOC_LANG` | `fr-FR` | Langue des documents |
 | `XLSX_TABLE_STYLE` | `TableStyleMedium2` | Style des tableaux Excel |
 | `OUTPUT_DIR` | `/out` (Docker) | Dossier des fichiers générés |
@@ -108,6 +150,7 @@ mcpServers:
     url: http://mcp-office:8000/mcp
     headers:
       Authorization: "Bearer ${MCP_OFFICE_KEY}"
+      X-User-Id: "{{LIBRECHAT_USER_ID}}"   # catalogue « Mes diapos » propre à chaque utilisateur
     timeout: 60000
     serverInstructions: |
       Quand l'utilisateur demande un Word, Excel ou PowerPoint, appelle l'outil correspondant
@@ -117,6 +160,9 @@ mcpServers:
       choisis une ambiance couleur, en respectant les limites, puis appelle create_powerpoint.
       Si des dépassements sont signalés, raccourcis les textes concernés et regénère.
       N'appelle refresh_template que si l'utilisateur annonce un nouveau modèle d'entreprise.
+      Si l'utilisateur veut réutiliser des diapos de sa propre présentation : add_slides_link,
+      puis get_slides_report ; présente-lui les alertes d'écart au modèle avant add_user_slides,
+      et ne force jamais une diapo refusée sans son accord explicite.
 ```
 Si l'instance LibreChat est hébergée par un tiers, demander à l'administrateur d'ajouter ce bloc (ou d'autoriser les serveurs MCP utilisateurs) et d'ouvrir le flux réseau vers le serveur.
 
@@ -132,6 +178,8 @@ Le rendu PowerPoint suppose les polices N27 installées sur le poste qui ouvre l
 ### Avant la mise en service
 - [x] **Tester l'image Docker** (01/10/2026, Docker 29.3 sous WSL 2, modèles en local) : image de 207 Mo construite, conteneur `healthy`, utilisateur non-root `app`, système de fichiers en lecture seule sauf `/out` et `/data/catalog`, `/mcp` refusé sans clé (401), 7 outils, `refresh_template`, catalogue, présentation de 28 diapos générée en 0,7 s et téléchargée, catalogue conservé après redémarrage, 126 Mo de mémoire utilisés sur 512 Mo.
 - [ ] Fuseau horaire : le conteneur est en UTC (la date « analysé le » a 2 h de décalage). Ajouter `tzdata` à l'image et `TZ=Europe/Paris`.
+- [x] **Modèle PowerPoint embarqué dans l'image** (`catalog/bundle`, hors Git) : testé en déploiement à nu (volume vierge, sans SharePoint ni `TEMPLATE_DIR`), présentation de 28 diapos produite.
+- [ ] Embarquer aussi les modèles Word et Excel (aujourd'hui relus sur SharePoint ou `TEMPLATE_DIR` à chaque génération).
 - [ ] **Tester avec SharePoint** : app Entra ID en `Sites.Selected`, `SP_SITE_ID` / `SP_FOLDER` réels, récupération du modèle épinglé (testé uniquement avec `TEMPLATE_DIR`).
 - [ ] **Tester de bout en bout depuis LibreChat** : appel de `get_presentation_catalog` par le chat, qualité des plans proposés, prise en compte des dépassements signalés, lien de téléchargement via `PUBLIC_BASE_URL` derrière le reverse-proxy.
 - [ ] **Restreindre `refresh_template`** aux administrateurs (clé distincte ou outil non exposé au chat) : aujourd'hui tout utilisateur du chat peut changer le modèle épinglé.
@@ -145,6 +193,22 @@ Le rendu PowerPoint suppose les polices N27 installées sur le poste qui ouvre l
 - [ ] **Contrôle des débordements** : les limites `max` sont des nombres de caractères estimés à l'œil. Il serait plus fiable de mesurer le texte avec les métriques des polices N27 et la taille des zones, et d'ajuster `max` d'après les rendus réels.
 - [ ] Libellés et ambiances des variantes (`variants` dans `catalog/pptx.json`) : saisis à la main, à revoir à chaque nouveau modèle (`refresh_template` signale les nouvelles dispositions mais pas leur couleur).
 - [ ] Polices N27 : vérifier la licence et l'éventuel embarquement dans les fichiers destinés aux clients.
+
+### Diapos de l'utilisateur
+- [x] Dépôt, analyse d'écart au modèle, ajout au catalogue personnel et génération : testé de bout en bout en HTTP (diapos conformes à 100/100, diapo retouchée en Arial avec couleur hors palette en alerte à 75/100, graphique et présentation hors modèle refusés, isolement entre deux utilisateurs, rendu vérifié).
+- [ ] Reconstruire et retester l'image Docker avec cette fonctionnalité (testée uniquement en local hors Docker) : écriture de `users/` et `imports/` dans le volume `catalog-state`, page de dépôt.
+- [ ] Tester l'en-tête `X-User-Id` avec LibreChat réel (`{{LIBRECHAT_USER_ID}}`) et le lien de dépôt derrière le reverse-proxy (taille maximale des requêtes).
+- [ ] **Décisions à valider** :
+  - Arrivée du fichier : lien de dépôt servi par le serveur (choix actuel, aucun droit SharePoint supplémentaire, reverse-proxy à configurer pour 50 Mo) ou lecture dans le OneDrive/SharePoint de l'utilisateur (droits Graph plus larges).
+  - Identification : en-tête `X-User-Id` transmis par LibreChat, conservé sous forme d'empreinte ; sans en-tête, catalogue « Mes diapos » commun à tous.
+  - Portée : catalogues personnels (choix actuel) ou catalogue d'équipe validé par un référent charte.
+  - Seuils de conformité : alerte < 80, refus < 60, toute entorse à la charte (police, couleur, thème) en alerte ; pondérations du tableau ci-dessus.
+- [ ] Catalogue d'équipe : promouvoir une diapo utilisateur validée vers un catalogue partagé (aujourd'hui personnel ou commun à tous sans en-tête), avec validation par un référent charte.
+- [ ] Graphiques et SmartArt : aujourd'hui refusés car non recopiés ; prise en charge possible (copie des parties `chart` et de leur classeur).
+- [ ] Textes dans des formes groupées : conservés tels quels, pas proposés comme champs.
+- [ ] Nommage des champs : automatique (`texte1`…) puis renommé par le chat ; le rendre plus parlant d'après la position et le style.
+- [ ] Durée de conservation des présentations déposées et des catalogues personnels (RGPD, confidentialité des contenus) ; outil de purge.
+- [ ] Après un `refresh_template`, revérifier les diapos utilisateur (dispositions disparues du nouveau modèle).
 
 ### Word et Excel
 - [ ] Appliquer la même approche que PowerPoint : modèle épinglé + catalogue (styles autorisés, blocs types) au lieu du « dernier modèle » relu à chaque génération.

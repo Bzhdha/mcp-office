@@ -1,6 +1,6 @@
 """MCP Office: convertit les réponses IA en DOCX/XLSX/PPTX à partir du dernier modèle d'entreprise (SharePoint)."""
 from copy import deepcopy
-import io,os,re,json,time,secrets,zipfile,hmac,httpx,uvicorn
+import io,os,re,json,time,secrets,zipfile,hmac,hashlib,shutil,httpx,uvicorn
 from pathlib import Path
 from urllib.parse import quote
 from docx import Document
@@ -13,15 +13,15 @@ from pptx import Presentation
 from pptx.util import Emu
 from pptx.oxml.ns import qn as pq
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
-from mcp.server.fastmcp import FastMCP
-from starlette.responses import Response,JSONResponse
+from mcp.server.fastmcp import FastMCP,Context
+from starlette.responses import Response,JSONResponse,HTMLResponse
 
 E=os.environ.get
 TENANT,CID,CSEC,SITE,FOLDER=E("SP_TENANT_ID"),E("SP_CLIENT_ID"),E("SP_CLIENT_SECRET"),E("SP_SITE_ID"),E("SP_FOLDER","Modeles")
 LOCAL=E("TEMPLATE_DIR");API_KEY=E("MCP_API_KEY","");BASE=E("PUBLIC_BASE_URL","http://localhost:8000").rstrip("/")
 OUT=Path(E("OUTPUT_DIR","/tmp/mcp-office"));OUT.mkdir(parents=True,exist_ok=True);TTL=int(E("FILE_TTL","3600"));MAXIN=int(E("MAX_INPUT","500000"))
 LANG=E("DOC_LANG","fr-FR");CACHE=int(E("TEMPLATE_CACHE","300"))
-CAT=Path(E("CATALOG_DIR","/data/catalog"));MODELS=Path(E("MODELS_DIR",str(Path(__file__).with_name("catalog"))))
+CAT=Path(E("CATALOG_DIR","/data/catalog"));MODELS=Path(E("MODELS_DIR",str(Path(__file__).with_name("catalog"))));BUNDLE=MODELS/"bundle"
 EXT={"docx":(".dotx",".docx"),"xlsx":(".xltx",".xlsx"),"pptx":(".potx",".pptx")}
 MIME={"docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","xlsx":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","pptx":"application/vnd.openxmlformats-officedocument.presentationml.presentation"}
 G="https://graph.microsoft.com/v1.0";_tok=[None,0];_tpl={}
@@ -32,6 +32,7 @@ def _gtoken():
  r=httpx.post(f"https://login.microsoftonline.com/{TENANT}/oauth2/v2.0/token",data={"grant_type":"client_credentials","client_id":CID,"client_secret":CSEC,"scope":"https://graph.microsoft.com/.default"},timeout=20);r.raise_for_status();j=r.json()
  _tok[:]=[j["access_token"],time.time()+j["expires_in"]];return _tok[0]
 def _list():
+ if not LOCAL and not all((TENANT,CID,CSEC,SITE)):raise ValueError("Aucune source de modèles configurée (SP_* ou TEMPLATE_DIR) : le modèle PowerPoint épinglé reste utilisé")
  if LOCAL:return[{"name":p.name,"modified":p.stat().st_mtime,"id":str(p),"etag":str(p.stat().st_mtime)}for p in Path(LOCAL).iterdir()if p.is_file()]
  h={"Authorization":"Bearer "+_gtoken()};u=f"{G}/sites/{SITE}/drive/root:/{FOLDER.strip('/')}:/children?$select=id,name,lastModifiedDateTime,eTag,file&$top=999";items=[]
  while u:r=httpx.get(u,headers=h,timeout=20);r.raise_for_status();j=r.json();items+=j["value"];u=j.get("@odata.nextLink")
@@ -84,7 +85,7 @@ def plain(t):return"".join(r[0]for r in runs(t))
 # ---------- Génération ----------
 def _save(kind,name,obj):
  for f in OUT.iterdir():
-  if f.stat().st_mtime<time.time()-TTL:f.unlink(missing_ok=True)
+  if f.stat().st_mtime<time.time()-TTL:shutil.rmtree(f,ignore_errors=True)if f.is_dir()else f.unlink(missing_ok=True)
  tok=secrets.token_urlsafe(24);safe=re.sub(r"[^\w\-. ]","_",name)[:80].strip()or"document"
  d=OUT/tok;d.mkdir();obj.save(d/f"{safe}.{kind}");return f"{BASE}/files/{tok}/{quote(safe)}.{kind}"
 
@@ -165,6 +166,21 @@ def _dup(p,src):
  for rel in list(src.part.rels._rels.values()):
   if rel.reltype.endswith(("/slideLayout","/notesSlide")):continue
   m[rel.rId]=s.part.rels.get_or_add_ext_rel(rel.reltype,rel.target_ref)if rel.is_external else s.part.relate_to(rel.target_part,rel.reltype)
+ return _copy_shapes(s,src,m)
+def _import(p,src):
+ """Copie une diapo d'une AUTRE présentation (diapo utilisateur) : même disposition du modèle, images et liens externes recopiés."""
+ s=p.slides.add_slide(_layout(p,src.slide_layout.name));tree=s.shapes._spTree
+ for sh in list(s.shapes):tree.remove(sh._element)
+ m={}
+ for rel in list(src.part.rels._rels.values()):
+  if rel.reltype.endswith(("/slideLayout","/notesSlide")):continue
+  if rel.is_external:m[rel.rId]=s.part.relate_to(rel.target_ref,rel.reltype,is_external=True)
+  elif rel.reltype==RT.IMAGE:
+   try:m[rel.rId]=s.part.get_or_add_image_part(io.BytesIO(rel.target_part.blob))[1]
+   except Exception:pass  # format d'image non pris en charge (signalé à l'analyse)
+ return _copy_shapes(s,src,m)
+def _copy_shapes(s,src,m):
+ tree=s.shapes._spTree
  bg=src._element.cSld.bg
  if bg is not None:s._element.cSld.insert(0,deepcopy(bg))
  for el in list(src.shapes._spTree)[2:]:
@@ -292,12 +308,16 @@ def catalog(prefix="",refresh=False):
  if prefix in _cats and not refresh:return _cats[prefix]
  sf=_cfile(CAT,prefix);st=json.loads(sf.read_text("utf8"))if sf.is_file()else{}
  cf=_cfile(MODELS,prefix);cfg=json.loads(cf.read_text("utf8"))if cf.is_file()else{}
+ bf=_cfile(BUNDLE,prefix)
+ if not refresh and not st.get("template")and bf.is_file()and BUNDLE!=CAT:  # 1er démarrage : modèle et analyse livrés dans l'image (python server.py bundle)
+  bs=json.loads(bf.read_text("utf8"))
+  if(BUNDLE/bs.get("template","")).is_file():CAT.mkdir(parents=True,exist_ok=True);(CAT/bs["template"]).write_bytes((BUNDLE/bs["template"]).read_bytes());sf.write_text(bf.read_text("utf8"),"utf8");st=bs
  if refresh or not st.get("template")or not(CAT/st["template"]).is_file():
   name,b=latest("pptx",prefix);CAT.mkdir(parents=True,exist_ok=True);(CAT/name).write_bytes(b);p=Presentation(_untemplate(b))
   st={"template":name,"analyzed":time.strftime("%Y-%m-%d %H:%M"),"fonts":dict(zip(("accent","texte"),_fonts(p))),"inventory":_inventory(p)}
   sf.write_text(json.dumps(st,ensure_ascii=False,indent=1),"utf8")
  b=(CAT/st["template"]).read_bytes()
- c={**st,"fonts":cfg.get("fonts")or st["fonts"],"rules":cfg.get("rules",[]),"groups":cfg.get("groups",[]),"ambiances":cfg.get("ambiances",{}),"default_ambiance":cfg.get("default_ambiance",""),"ignored":cfg.get("ignored_layouts",{}),"models":cfg.get("models")or _auto_models(st["inventory"]),"bytes":b}
+ c={**st,"fonts":cfg.get("fonts")or st["fonts"],"rules":cfg.get("rules",[]),"groups":cfg.get("groups",[]),"ambiances":cfg.get("ambiances",{}),"default_ambiance":cfg.get("default_ambiance",""),"ignored":cfg.get("ignored_layouts",{}),"conformite":cfg.get("conformite",{}),"models":cfg.get("models")or _auto_models(st["inventory"]),"bytes":b}
  for m in c["models"].values():m["_v"]=_variants(m,st["inventory"])
  c["warnings"]=_check(c,Presentation(_untemplate(b)));_cats[prefix]=c;return c
 def _pickv(c,n,m,d,used,amb):
@@ -313,8 +333,9 @@ def _expand(c,d,used,warn,amb=""):
  n=d.get("model");m=c["models"].get(n)
  if not m:raise ValueError(f"Modèle de diapo inconnu « {n} » (voir get_presentation_catalog)")
  vs=_pickv(c,n,m,d,used,amb)
- if m.get("asis"):return[{**{k:v[k]for k in("type","layout")if k in v},"asis":True,"notes":d.get("notes")}for v in vs]
- src={k:vs[0][k]for k in("type","layout")if k in vs[0]}
+ SK=("type","layout","user","slide")
+ if m.get("asis"):return[{**{k:v[k]for k in SK if k in v},"asis":True,"notes":d.get("notes")}for v in vs]
+ src={k:vs[0][k]for k in SK if k in vs[0]}
  z=dict(m.get("fixed")or{});vals=d.get("fields")or{};F=m.get("fields")or{};anchors={}
  warn+=[f"diapo {d['_i']} ({n}) : champ inconnu « {k} » ignoré"for k in vals if k not in F]
  for k,f in F.items():
@@ -333,8 +354,10 @@ def _expand(c,d,used,warn,amb=""):
   z[f["zone"]]=v
   if f.get("anchor")or f.get("bullets")is False:anchors[f["zone"]]={"anchor":f.get("anchor"),"bullets":f.get("bullets",True)}
  return[{**src,"zones":z,"anchors":anchors,"notes":d.get("notes")}]
-def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance=""):
- c=catalog(template_prefix);tn=c["template"];p=Presentation(_untemplate(c["bytes"]));orig=list(p.slides)
+def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance="",uid=""):
+ c=catalog(template_prefix);U=_umodels(uid,template_prefix)if uid else{}
+ if U:c={**c,"models":{**c["models"],**U}}  # diapos de l'utilisateur (catalogue étendu)
+ tn=c["template"];p=Presentation(_untemplate(c["bytes"]));orig=list(p.slides);uprs={}
  if not orig:raise ValueError("Le modèle PowerPoint ne contient aucune diapo type")
  p.core_properties.title=title;p.core_properties.language=LANG;fonts=(c["fonts"].get("accent",""),c["fonts"].get("texte",""));slides=list(slides);warn=[]if warn is None else warn;used={}
  amb=ambiance or c["default_ambiance"]
@@ -343,9 +366,12 @@ def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance="")
  else:cover=[]if slides and str(slides[0].get("type"))=="1"else[{"type":1,"title":title,"bullets":[subtitle]if subtitle else[]}]
  for d in cover+slides:
   tb=d.get("table");body=[d.get("bullets")or[],d.get("bullets2")or[]];bi=0;done=set()
-  s=p.slides.add_slide(_layout(p,d["layout"]))if d.get("layout")else _dup(p,_pick(p,d.get("type"),bool(tb)))
-  for k,v in(d.get("zones")or{}).items():
-   for sh in _zone(s,k):
+  if d.get("user"):
+   if d["user"]not in uprs:uprs[d["user"]]=Presentation(str(_udir(uid,template_prefix)/d["user"]))
+   s=_import(p,uprs[d["user"]].slides[int(d["slide"])-1])
+  else:s=p.slides.add_slide(_layout(p,d["layout"]))if d.get("layout")else _dup(p,_pick(p,d.get("type"),bool(tb)))
+  for k,v,shs in[(k,v,_zone(s,k))for k,v in(d.get("zones")or{}).items()]:  # résolution avant suppression : « Nom#n » ne se décale pas
+   for sh in shs:
     done.add(sh.shape_id)
     if v is None:sh._element.getparent().remove(sh._element)  # null -> forme supprimée (ex. étiquette « EXEMPLE »)
     elif sh.has_table and isinstance(v,list):_table(sh.table,v,fonts)
@@ -360,7 +386,7 @@ def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance="")
         for x in pr.findall(pq(t)):pr.remove(x)
        nx=next((x for x in pr if x.tag in(pq("a:tabLst"),pq("a:defRPr"),pq("a:extLst"))),None);bn=pr.makeelement(pq("a:buNone"),{})
        nx.addprevious(bn)if nx is not None else pr.append(bn)  # ordre du schéma DrawingML
-  for sh in[]if d.get("asis")else list(s.shapes):  # asis : diapo insérée telle quelle (contenu institutionnel)
+  for sh in[]if d.get("asis")or d.get("user")else list(s.shapes):  # asis : diapo insérée telle quelle ; diapo utilisateur : hors champs = décor conservé
    if sh.shape_id in done:continue
    ph=sh.is_placeholder and int(sh.placeholder_format.type)
    if sh.has_table and tb:_table(sh.table,tb,fonts);tb=None
@@ -376,6 +402,112 @@ def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance="")
   for x in list(sl):
    if p.part.related_part(x.rId)is s.part:p.part.drop_rel(x.rId);sl.remove(x)
  return tn,p
+
+# ---------- Diapos utilisateur : extension du catalogue, avec contrôle d'écart au modèle d'entreprise ----------
+# Un utilisateur dépose une présentation qu'il a faite (lien de dépôt), chaque diapo est notée (0-100) par rapport au modèle épinglé,
+# les diapos retenues deviennent des « modèles » de son catalogue : le chat en remplit les textes, décor et images sont conservés.
+IMP=CAT/"imports";MAXUP=int(E("MAX_UPLOAD","52428800"))
+SEUILS={"alerte":80,"refus":60}
+def _uid(ctx):
+ """Utilisateur LibreChat (en-tête X-User-Id, cf. {{LIBRECHAT_USER_ID}}) ; anonymisé ; « commun » à défaut."""
+ try:v=ctx.request_context.request.headers.get("x-user-id","")
+ except Exception:v=""
+ return hashlib.sha256(v.encode()).hexdigest()[:16]if v.strip()else"commun"
+def _udir(uid,prefix=""):return CAT/"users"/uid/(re.sub(r"\W","_",prefix)or"pptx")
+def _umodels(uid,prefix=""):
+ f=_udir(uid,prefix)/"models.json"
+ if not f.is_file():return{}
+ M=json.loads(f.read_text("utf8"))
+ for m in M.values():
+  m["_v"]=[{"user":m["source"]["user"],"slide":m["source"]["slide"]}]
+  for x in(m.get("fields")or{}).values():x["_user"]=True
+ return M
+def _palette(c):
+ """Couleurs de la charte : thème + toutes les couleurs employées dans le modèle (masques, dispositions, diapos types)."""
+ if"palette"not in c:
+  z=zipfile.ZipFile(io.BytesIO(c["bytes"]));s=set()
+  for n in z.namelist():
+   if n.endswith(".xml")and n.startswith(("ppt/theme","ppt/slideMasters","ppt/slideLayouts","ppt/slides/")):s|={x.upper()for x in re.findall(r'(?:srgbClr val|lastClr)="([0-9A-Fa-f]{6})"',z.read(n).decode("utf8","ignore"))}
+  c["palette"]=sorted(s)
+ return c["palette"]
+def _near(h,pal,tol=28):
+ r,g,b=(int(h[i:i+2],16)for i in(0,2,4))
+ if max(r,g,b)-min(r,g,b)<=12:return True  # gris, noir, blanc : neutres
+ return any(abs(r-int(x[0:2],16))+abs(g-int(x[2:4],16))+abs(b-int(x[4:6],16))<=tol for x in pal)
+def _theme(master):
+ b=master.part.part_related_by(RT.THEME).blob.decode("utf8","ignore")
+ fo=tuple((m[1]if m else"")for m in(re.search(rf"<a:{k}Font>\s*<a:latin typeface=\"([^\"]*)\"",b)for k in("major","minor")))
+ cs=re.search(r"<a:clrScheme.*?</a:clrScheme>",b,re.S);cl=dict(re.findall(r'<a:(dk1|lt1|dk2|lt2|accent\d|hlink|folHlink)>\s*<a:(?:srgbClr val|sysClr[^>]*lastClr)="([0-9A-Fa-f]{6})"',cs[0]if cs else""))
+ return fo,{k:v.upper()for k,v in cl.items()}
+def _sig(lay):return sorted((h.placeholder_format.idx,int(h.placeholder_format.type))for h in lay.placeholders)
+def _fields(s):
+ """Champs proposés pour une diapo utilisateur : chaque zone de texte ou tableau, dans l'ordre de lecture."""
+ names=[sh.name for sh in s.shapes];seen={};F={};k=0;items=[]
+ for sh in s.shapes:
+  seen[sh.name]=seen.get(sh.name,0)+1;key=sh.name if names.count(sh.name)==1 else f"{sh.name}#{seen[sh.name]}"
+  if sh.has_table or(sh.has_text_frame and sh.text_frame.text.strip()and not re.fullmatch(r"\s*[#\d]{1,2}([.,]\d{1,2})?\s*",sh.text_frame.text)):items.append((sh.top or 0,sh.left or 0,key,sh))
+ for _,_,key,sh in sorted(items,key=lambda x:(round(x[0]/18e4),x[1])):
+  if sh.has_table:F[f"tableau{sum(1 for x in F if x.startswith('tableau'))+1}"]={"zone":key,"kind":"table","max_rows":len(sh.table.rows)+3,"max_cols":len(sh.table.columns),"exemple":" | ".join(c.text for c in sh.table.rows[0].cells)[:80]};continue
+  ps=[p.text.replace("\v"," ")for p in sh.text_frame.paragraphs if p.text.strip()]
+  t=sh.is_placeholder and int(sh.placeholder_format.type)in(1,3)and"titre"not in F
+  if not t:k+=1
+  F["titre"if t else f"texte{k}"]={"zone":key,**({"kind":"lines","max_lines":len(ps)+2}if len(ps)>1 else{}),"max":max(25 if t else 20,round(max(map(len,ps))*1.3)),"exemple":" / ".join(ps)[:120]}
+ return F
+def conformity(c,tpl,up,n):
+ """Écart d'une diapo utilisateur au modèle d'entreprise : score 0-100, niveau, alertes, champs proposés.
+ Toute entorse à la charte (polices, couleurs, thème) donne au moins une alerte ; contenu non reproductible ou disposition inconnue : refus."""
+ s=up.slides[n-1];a=[];pen=0;bloc=False;ch=False
+ def add(p,msg,b=False,charte=False):
+  nonlocal pen,bloc,ch;pen+=p;bloc|=b;a.append(msg);ch|=charte
+ if(up.slide_width,up.slide_height)!=(tpl.slide_width,tpl.slide_height):add(20,f"format de diapo différent ({up.slide_width/36e4:.1f} x {up.slide_height/36e4:.1f} cm)")
+ L=next((l for m in tpl.slide_masters for l in m.slide_layouts if l.name==s.slide_layout.name),None)
+ if L is None:add(50,f"disposition « {s.slide_layout.name} » absente du modèle d'entreprise",True)
+ elif _sig(L)!=_sig(s.slide_layout):add(10,f"disposition « {L.name} » modifiée par rapport au modèle")
+ fo,cl=_theme(s.slide_layout.slide_master);tfo,tcl=_theme((L or tpl.slide_layouts[0]).slide_master)
+ if fo!=tfo:add(25,charte=True,msg=f"polices du thème différentes ({' / '.join(fo)} au lieu de {' / '.join(tfo)})")
+ dc=[k for k in tcl if cl.get(k)!=tcl[k]]
+ if dc:add(min(20,3*len(dc)),charte=True,msg=f"couleurs du thème différentes ({', '.join(dc)})")
+ x=s._element.xml;fam=(c["fonts"].get("texte")or"").split(" ")[0]
+ ff=sorted({f for f in re.findall(r'<a:latin typeface="([^"]+)"',x)if not f.startswith(("+",fam))})
+ if ff:add(min(30,15*len(ff)),charte=True,msg=f"polices hors charte : {', '.join(ff)}")
+ pal=_palette(c);oc=sorted({h.upper()for h in re.findall(r'srgbClr val="([0-9A-Fa-f]{6})"',x)if not _near(h,pal)})
+ if oc:add(min(30,10*len(oc)),charte=True,msg=f"couleurs hors palette : {', '.join('#'+h for h in oc[:6])}")
+ if any(int(v)<800 for v in re.findall(r'<a:rPr[^>]*\ssz="(\d+)"',x)):add(5,"texte de moins de 8 pt (lisibilité)")
+ W,H=up.slide_width,up.slide_height;out=[sh.name for sh in s.shapes if sh.left is not None and(sh.left<-W*.02 or sh.top<-H*.02 or sh.left+sh.width>W*1.02 or sh.top+sh.height>H*1.02)]
+ if out:add(min(15,5*len(out)),f"formes hors de la diapo : {', '.join(out[:4])}")
+ rt=[r.reltype.rsplit("/",1)[-1]for r in s.part.rels._rels.values()]
+ un=sorted({t for t in rt if t in("chart","diagramData","diagramLayout","oleObject","package","video","audio","media")})
+ if un:add(50,f"contenu non reproductible : {', '.join(un)} (graphique, SmartArt, objet incorporé ou média)",True)
+ F=_fields(s)
+ if not F:a.append("aucune zone de texte : la diapo sera insérée telle quelle")
+ sc=max(0,100-pen);S={**SEUILS,**(c.get("conformite")or{})}
+ lvl="refus"if bloc or sc<S["refus"]else"alerte"if sc<S["alerte"]or ch else"conforme"
+ return{"diapo":n,"titre":(s.shapes.title.text_frame.text.strip()[:60]if s.shapes.title is not None and s.shapes.title.has_text_frame else"")or s.slide_layout.name,"score":sc,"niveau":lvl,"alertes":a,"champs":F}
+def analyze_upload(tok,prefix=""):
+ c=catalog(prefix);d=IMP/tok;up=Presentation(str(d/"deck.pptx"));tpl=Presentation(_untemplate(c["bytes"]))
+ r={"fichier":json.loads((d/"meta.json").read_text("utf8")).get("name",""),"modele":c["template"],"seuils":{**SEUILS,**(c.get("conformite")or{})},"diapos":[conformity(c,tpl,up,i)for i in range(1,len(up.slides)+1)]}
+ (d/"report.json").write_text(json.dumps(r,ensure_ascii=False,indent=1),"utf8");return r
+def _report_txt(r):
+ ic={"conforme":"✓","alerte":"⚠","refus":"✗"}
+ return(f"Analyse de « {r['fichier']} » par rapport au modèle « {r['modele']} » (conforme ≥ {r['seuils']['alerte']}, refus < {r['seuils']['refus']}) :\n"
+  +"\n".join(f"{ic[x['niveau']]} diapo {x['diapo']} « {x['titre']} » : {x['score']}/100 ({x['niveau']})"+"".join(f"\n    - {m}"for m in x["alertes"])
+   +("\n    champs : "+"; ".join(f"{k} ({v.get('kind','texte')}, ex. {v['exemple'][:40]!r})"for k,v in x["champs"].items())if x["champs"]else"")for x in r["diapos"]))
+UPLOAD_PAGE="""<!doctype html><html lang="fr"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Ajouter mes diapos</title>
+<style>body{font:15px/1.5 system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem;color:#1d1a24}h1{font-size:1.4rem}
+.zone{border:2px dashed #b9a6e8;border-radius:10px;padding:1.5rem;text-align:center;background:#f6f2fd}button{font:inherit;padding:.5rem 1rem;border-radius:6px;border:0;background:#6d32d9;color:#fff;cursor:pointer}
+li{margin:.6rem 0;padding:.6rem .8rem;border-radius:8px;list-style:none}.conforme{background:#e3f3e9}.alerte{background:#fbefdc}.refus{background:#fbe2e2}ul{padding:0}small{color:#5c566b}</style>
+<h1>Ajouter des diapos à mon catalogue</h1><p>Déposez une présentation réalisée avec le modèle d'entreprise. Chaque diapo est comparée au modèle : <b>conforme</b>, <b>alerte</b> (écart notable) ou <b>refus</b> (trop éloignée). Revenez ensuite dans la conversation pour choisir les diapos à ajouter.</p>
+<div class="zone"><input type="file" id="f" accept=".pptx"> <button id="b">Analyser</button><p id="s"></p></div><ul id="r"></ul>
+<script>
+const s=document.getElementById('s'),r=document.getElementById('r');
+document.getElementById('b').onclick=async()=>{const f=document.getElementById('f').files[0];if(!f){s.textContent='Choisissez un fichier .pptx.';return}
+s.textContent='Analyse en cours…';r.innerHTML='';
+const x=await fetch(location.pathname+'?name='+encodeURIComponent(f.name),{method:'PUT',body:f});const j=await x.json();
+if(!x.ok){s.textContent=j.error||'Erreur';return}
+s.textContent=`${j.diapos.length} diapos analysées (modèle ${j.modele}). Indiquez dans la conversation les numéros à ajouter.`;
+for(const d of j.diapos){const li=document.createElement('li');li.className=d.niveau;
+li.innerHTML=`<b>Diapo ${d.diapo} · ${d.score}/100 · ${d.niveau}</b> — ${d.titre.replace(/</g,'&lt;')}<br><small>${(d.alertes.join(' ; ')||'aucun écart détecté').replace(/</g,'&lt;')}</small>`;r.appendChild(li)}};
+</script></html>"""
 
 # ---------- Serveur MCP ----------
 mcp=FastMCP("office-templates",host=E("HOST","0.0.0.0"),port=int(E("PORT","8000")),stateless_http=True)
@@ -400,12 +532,13 @@ def create_excel(title:str,sheets:list[dict],filename:str="",template_prefix:str
  """Crée un classeur Excel (.xlsx) avec le dernier modèle. `sheets`: [{"name":"Ventes","rows":[["Col1","Col2"],[1,2]]}], 1re ligne = en-têtes (mise en tableau Excel)."""
  _chk(title,sheets);tn,w=make_xlsx(title,sheets,template_prefix);return _ret("xlsx",filename or title,tn,w)
 @mcp.tool()
-def get_presentation_catalog(template_prefix:str="")->str:
- """À appeler avant create_powerpoint : diapos disponibles dans le modèle d'entreprise (usage, champs à remplir, limites) et règles de rédaction."""
- c=catalog(template_prefix);f=c["fonts"]
+def get_presentation_catalog(ctx:Context,template_prefix:str="")->str:
+ """À appeler avant create_powerpoint : diapos disponibles dans le modèle d'entreprise (usage, champs à remplir, limites) et règles de rédaction, plus les diapos ajoutées par l'utilisateur (« Mes diapos »)."""
+ c=catalog(template_prefix);f=c["fonts"];U=_umodels(_uid(ctx),template_prefix)
+ if U:c={**c,"models":{**c["models"],**U},"groups":(c["groups"]or[{"name":"Diapos","models":list(c["models"])}])+[{"name":"Mes diapos","help":"ajoutées par l'utilisateur depuis ses présentations ; texte remplaçable, décor et images conservés","models":list(U)}]}
  def fd(k,x):
   lim=", ".join(filter(None,[x.get("kind","text")if x.get("kind")in("lines","table")else"texte",f"≤{x['max']} car."if x.get("max")else"",f"≤{x['max_lines']} lignes"if x.get("max_lines")else"",f"≤{x.get('max_rows')}x{x.get('max_cols')}"if x.get("kind")=="table"else""]))
-  return f"{k} ({lim})"+(f" : {x['help']}"if x.get("help")else"")+(f" [défaut : {x['default']!r}]"if x.get("default")else"")
+  return f"{k} ({lim})"+(f" : {x['help']}"if x.get("help")else"")+(f" ex. {x['exemple'][:50]!r}"if x.get("_user")and x.get("exemple")else"")+(f" [défaut : {x['default']!r}]"if x.get("default")else"")
  def var(m):
   V=m["_v"]
   if m.get("sequence"):return f" [{len(V)} diapos insérées]"
@@ -415,7 +548,8 @@ def get_presentation_catalog(template_prefix:str="")->str:
   return f" [{len(V)} variantes"+(f", ambiances {'/'.join(a)}"if a else"")+" ; omis = alternance automatique, « variante »: n pour imposer : "+", ".join(f"{i}={x.get('label',next(iter(x.values())))}"for i,x in enumerate(V,1))+"]"
  def model(n,m):
   F=m.get("fields")or{}
-  return f"* {n} — {m.get('usage','')}{var(m)}\n  "+("(contenu fixe, aucun champ)"if m.get("asis")else"champs : "+"; ".join(fd(k,x)for k,x in F.items()))
+  cf=m.get("conformite")or{};al=f" ⚠ ÉCART AU MODÈLE ({cf['score']}/100 : {'; '.join(cf['alertes'][:3])}) — à signaler à l'utilisateur"if cf.get("niveau")in("alerte","refus")else""
+  return f"* {n} — {m.get('usage','')}{var(m)}{al}\n  "+("(contenu fixe, aucun champ)"if m.get("asis")else"champs : "+"; ".join(fd(k,x)for k,x in F.items()))
  G=c["groups"]or[{"name":"Diapos","models":list(c["models"])}];seen=set(x for g in G for x in g["models"])
  G=G+([{"name":"Autres","models":[n for n in c["models"]if n not in seen]}]if any(n not in seen for n in c["models"])else[])
  return(f"Modèle « {c['template']} » (analysé le {c['analyzed']}). Polices appliquées automatiquement : {f.get('texte')} (texte), {f.get('accent')} (accent).\n"
@@ -438,14 +572,78 @@ def list_slide_types(template_prefix:str="",layouts:bool=False)->str:
  if layouts:r+="\n\nDispositions (source « layout », masque n) :\n"+"\n".join(f"- {l['layout']} (masque {l.get('master',1)}) | "+("; ".join(f"{z['zone']} ({z['kind']}: {z['exemple'][:30]!r})"for z in l["zones"])or"mise en page figée")for l in inv["layouts"])
  return r
 @mcp.tool()
-def create_powerpoint(title:str,slides:list[dict],ambiance:str="",filename:str="",template_prefix:str="")->str:
+def create_powerpoint(ctx:Context,title:str,slides:list[dict],ambiance:str="",filename:str="",template_prefix:str="")->str:
  """Crée une présentation (.pptx) strictement conforme au modèle d'entreprise. Appeler d'abord get_presentation_catalog.
  `slides`: [{"model":"couverture","fields":{"titre":"…"}},…] dans l'ordre voulu ; "variante": n impose une variante visuelle ; **mot** = mise en valeur (police d'accent) ; « \\n » dans un texte = nouveau paragraphe ; "notes" = notes orateur.
  `ambiance` : couleur dominante du document (cf. catalogue) ; les variantes (couverture, intercalaires…) sont choisies dans cette ambiance et alternées.
  Les dépassements de limites sont signalés : corriger le contenu et regénérer si besoin."""
- _chk(title,slides);w=[];tn,p=make_pptx(title,slides,template_prefix=template_prefix,warn=w,ambiance=ambiance)
+ _chk(title,slides);w=[];tn,p=make_pptx(title,slides,template_prefix=template_prefix,warn=w,ambiance=ambiance,uid=_uid(ctx))
  return _ret("pptx",filename or title,tn,p)+("\n\nÀ corriger :\n- "+"\n- ".join(w)if w else"")
 
+@mcp.tool()
+def add_slides_link(ctx:Context,template_prefix:str="")->str:
+ """Étendre le catalogue avec des diapos de l'utilisateur : renvoie un lien de dépôt (valable 24 h) où il dépose une présentation .pptx faite avec le modèle d'entreprise ; chaque diapo y est comparée au modèle. Ensuite : get_slides_report puis add_user_slides."""
+ IMP.mkdir(parents=True,exist_ok=True)
+ for d in IMP.iterdir():
+  if d.stat().st_mtime<time.time()-86400:shutil.rmtree(d,ignore_errors=True)
+ tok=secrets.token_urlsafe(24);(IMP/tok).mkdir();(IMP/tok/"meta.json").write_text(json.dumps({"uid":_uid(ctx),"prefix":template_prefix,"created":time.time()}),"utf8")
+ return f"Lien de dépôt (valable 24 h) : {BASE}/import/{tok}\nIdentifiant d'import : {tok}\nAprès le dépôt, appeler get_slides_report(\"{tok}\")."
+def _imp(tok,ctx):
+ d=IMP/str(tok)
+ if not re.fullmatch(r"[\w-]{20,64}",str(tok))or not(d/"meta.json").is_file():raise ValueError("Import inconnu ou expiré : redemander un lien avec add_slides_link")
+ m=json.loads((d/"meta.json").read_text("utf8"))
+ if m["uid"]!=_uid(ctx):raise ValueError("Cet import appartient à un autre utilisateur")
+ if not(d/"deck.pptx").is_file():raise ValueError("Aucun fichier déposé pour l'instant : l'utilisateur doit ouvrir le lien et déposer sa présentation")
+ return d,m
+def _rep(d,tok,m):return json.loads((d/"report.json").read_text("utf8"))if(d/"report.json").is_file()else analyze_upload(tok,m["prefix"])
+@mcp.tool()
+def get_slides_report(ctx:Context,import_id:str)->str:
+ """Rapport d'analyse d'une présentation déposée : pour chaque diapo, score d'écart au modèle d'entreprise (0-100), niveau (conforme / alerte / refus), écarts détectés et champs qui seront proposés. Présenter les alertes à l'utilisateur."""
+ d,m=_imp(import_id,ctx)
+ return _report_txt(_rep(d,import_id,m))+"\n\nPour ajouter : add_user_slides(import_id, slides=[{\"diapo\":n,\"nom\":\"mon_modele\",\"usage\":\"à quoi sert la diapo\"}]). Diapos en « refus » : seulement avec forcer=true, après accord explicite de l'utilisateur."
+@mcp.tool()
+def add_user_slides(ctx:Context,import_id:str,slides:list[dict],forcer:bool=False)->str:
+ """Ajoute des diapos analysées au catalogue de l'utilisateur. `slides`: [{"diapo":3,"nom":"bilan_projet","usage":"…","champs":{"texte1":"col1_titre",…}}]. Renommer les champs d'après leurs exemples (rapport) pour que les noms disent leur rôle. Les diapos en alerte sont ajoutées avec leur alerte, à signaler à l'utilisateur ; en refus, seulement si forcer=true."""
+ d,m=_imp(import_id,ctx);r=_rep(d,import_id,m)
+ base=catalog(m["prefix"])["models"];ud=_udir(m["uid"],m["prefix"]);ud.mkdir(parents=True,exist_ok=True)
+ b=(d/"deck.pptx").read_bytes();fn=hashlib.sha256(b).hexdigest()[:16]+".pptx";(ud/fn).write_bytes(b)
+ mf=ud/"models.json";M=json.loads(mf.read_text("utf8"))if mf.is_file()else{};out=[]
+ for x in slides:
+  n=int(x.get("diapo",0));nom=str(x.get("nom","")).strip().lower()
+  a=next((y for y in r["diapos"]if y["diapo"]==n),None)
+  if not a:out.append(f"✗ diapo {n} : absente du fichier");continue
+  if not re.fullmatch(r"[a-z0-9_]{3,40}",nom)or nom in base:out.append(f"✗ diapo {n} : nom « {nom} » invalide ou déjà utilisé par le modèle d'entreprise (a-z, 0-9, _)");continue
+  if a["niveau"]=="refus"and not forcer:out.append(f"✗ diapo {n} : refusée, trop éloignée du modèle ({a['score']}/100) : {'; '.join(a['alertes'])}");continue
+  F={(x.get("champs")or{}).get(k,k):v for k,v in a["champs"].items()}
+  M[nom]={"usage":str(x.get("usage")or a["titre"])[:200],"source":{"user":fn,"slide":n},"fields":F,"origine":f"{r['fichier']}, diapo {n}","ajoute":time.strftime("%Y-%m-%d"),
+   "conformite":{"score":a["score"],"niveau":a["niveau"],"alertes":a["alertes"],"force":a["niveau"]=="refus"}}
+  out.append(("⚠"if a["niveau"]!="conforme"else"✓")+f" « {nom} » ajouté ({a['score']}/100, {a['niveau']})"+(f" — écarts : {'; '.join(a['alertes'])}"if a["niveau"]!="conforme"else""))
+ mf.write_text(json.dumps(M,ensure_ascii=False,indent=1),"utf8")
+ return"\n".join(out)+"\nCes diapos apparaissent dans get_presentation_catalog (rubrique « Mes diapos »)."
+@mcp.tool()
+def remove_user_slide(ctx:Context,nom:str,template_prefix:str="")->str:
+ """Retire une diapo du catalogue personnel de l'utilisateur (rubrique « Mes diapos »)."""
+ mf=_udir(_uid(ctx),template_prefix)/"models.json";M=json.loads(mf.read_text("utf8"))if mf.is_file()else{}
+ if nom not in M:return f"« {nom} » ne fait pas partie de vos diapos ({', '.join(M)or'aucune'})"
+ del M[nom];mf.write_text(json.dumps(M,ensure_ascii=False,indent=1),"utf8");return f"« {nom} » retiré de vos diapos."
+
+@mcp.custom_route("/import/{tok}",methods=["GET","PUT"])
+async def upload(req):
+ from starlette.concurrency import run_in_threadpool
+ tok=req.path_params["tok"];d=IMP/tok
+ if not re.fullmatch(r"[\w-]{20,64}",tok)or not(d/"meta.json").is_file()or(d/"meta.json").stat().st_mtime<time.time()-86400:return HTMLResponse("<p>Lien de dépôt inconnu ou expiré. Redemandez un lien dans la conversation.</p>",404)
+ if req.method=="GET":return HTMLResponse(UPLOAD_PAGE,headers={"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"})
+ if int(req.headers.get("content-length")or 0)>MAXUP:return JSONResponse({"error":f"Fichier trop volumineux (max {MAXUP//1048576} Mo)"},413)
+ b=await req.body()
+ if len(b)>MAXUP:return JSONResponse({"error":"Fichier trop volumineux"},413)
+ try:
+  if"ppt/presentation.xml"not in zipfile.ZipFile(io.BytesIO(b)).namelist():raise ValueError
+ except Exception:return JSONResponse({"error":"Ce fichier n'est pas une présentation PowerPoint (.pptx)"},400)
+ m=json.loads((d/"meta.json").read_text("utf8"));m["name"]=re.sub(r"[^\w\-. ]","_",req.query_params.get("name","presentation.pptx"))[:120]
+ (d/"deck.pptx").write_bytes(b);(d/"meta.json").write_text(json.dumps(m),"utf8");(d/"report.json").unlink(missing_ok=True)
+ try:r=await run_in_threadpool(analyze_upload,tok,m.get("prefix",""))
+ except Exception as e:return JSONResponse({"error":f"Analyse impossible : {e}"},400)
+ return JSONResponse(r)
 @mcp.custom_route("/files/{tok}/{name}",methods=["GET"])
 async def dl(req):
  tok,name=req.path_params["tok"],req.path_params["name"]
@@ -465,5 +663,10 @@ def app():
   await a(scope,rcv,snd)
  return auth
 if __name__=="__main__":
+ import sys
+ if sys.argv[1:2]==["bundle"]:  # prépare catalog/bundle (modèle + analyse) à embarquer dans l'image, depuis TEMPLATE_DIR ou SharePoint
+  CAT=BUNDLE;print(refresh_template(sys.argv[2]if len(sys.argv)>2 else""));sys.exit()
  if not API_KEY:print("⚠ MCP_API_KEY non défini : endpoint /mcp non protégé")
+ try:c=catalog();print(f"PowerPoint : modèle « {c['template']} » (analysé le {c['analyzed']}), {len(c['models'])} diapos"+(f", {len(c['warnings'])} avertissement(s)"if c["warnings"]else""))
+ except Exception as e:print(f"⚠ PowerPoint : aucun modèle disponible ({e}) ; fournir catalog/bundle, TEMPLATE_DIR ou SharePoint")
  uvicorn.run(app(),host=E("HOST","0.0.0.0"),port=int(E("PORT","8000")),proxy_headers=True)

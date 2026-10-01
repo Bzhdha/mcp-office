@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 modeles/
 .catalog/
+# modèle d'entreprise (C2 - restricted) embarqué dans l'image, jamais versionné (dépôt public)
+catalog/bundle/

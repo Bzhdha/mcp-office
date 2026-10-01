@@ -1,6 +1,6 @@
 # MCP Office – modèles d'entreprise pour LibreChat
 
-Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Excel, PowerPoint**, à partir des **modèles d'entreprise** du dossier SharePoint (styles, thème, masques, en-têtes/pieds de page conservés) : le plus récent pour Word et Excel, le modèle **épinglé** pour PowerPoint (voir catalogue).
+Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Excel, PowerPoint**, à partir des **modèles d'entreprise** (styles, thème, masques, en-têtes/pieds de page conservés) : modèles PowerPoint et Word **épinglés** et embarqués dans l'image (voir catalogues), modèle Excel le plus récent du dossier SharePoint.
 
 ## Outils exposés
 | Outil | Entrée | Sortie |
@@ -13,7 +13,7 @@ Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Ex
 | `create_excel` | `title`, `sheets:[{name, rows}]` (1re ligne = en-têtes → tableau Excel) | .xlsx |
 | `get_presentation_catalog` | – | diapos PowerPoint autorisées : usage, champs, limites, règles de rédaction (à appeler avant `create_powerpoint`) |
 | `create_powerpoint` | `title`, `slides:[{model, fields, variante, notes}]`, `ambiance` | .pptx + liste des dépassements à corriger |
-| `refresh_template` | – | épingle le dernier modèle PowerPoint et refait l'analyse (sur demande explicite) |
+| `refresh_template` | `type` (`pptx` ou `docx`) | épingle le dernier modèle PowerPoint ou Word de la source et refait l'analyse (sur demande explicite) |
 | `add_slides_link` | – | lien de dépôt (24 h) pour ajouter des diapos de l'utilisateur à son catalogue |
 | `get_slides_report` | `import_id` | écart au modèle de chaque diapo déposée : score, niveau, alertes, champs proposés |
 | `add_user_slides` | `import_id`, `slides:[{diapo, nom, usage, champs}]`, `forcer` | ajoute des diapos au catalogue de l'utilisateur (« Mes diapos ») |
@@ -24,7 +24,7 @@ Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Ex
 `template_prefix` (optionnel) permet de choisir une famille de modèles (ex. `Note_`, `Rapport_`). Le fichier retourné est un lien de téléchargement à usage temporaire (`FILE_TTL`).
 
 ## Fonctionnement
-- **Dernier modèle** : liste le dossier via Microsoft Graph, prend le fichier `.dotx/.docx`, `.xltx/.xlsx`, `.potx/.pptx` le plus récemment modifié ; cache invalidé par eTag.
+- **Source des modèles** : dossier SharePoint via Microsoft Graph (ou `TEMPLATE_DIR`), fichier le plus récemment modifié par type ; cache invalidé par eTag. Excel l'utilise à chaque génération ; PowerPoint et Word seulement à l'épinglage (`refresh_template`, `python server.py bundle`).
 - **Style par défaut** : Excel → 1re feuille du modèle dupliquée, données sous l'en-tête existant. Word et PowerPoint → voir ci-dessous.
 
 ### Word : blocs, cadres et unités d'œuvre
@@ -60,16 +60,16 @@ Le catalogue a deux parties :
 Le modèle n'est donc **ni relu sur SharePoint ni ré-analysé** à chaque génération (≈ 1 s par présentation). Publier un nouveau modèle ne change rien tant que `refresh_template` n'a pas été appelé ; cet outil signale les champs de la configuration qui ne correspondent plus au modèle.
 
 #### Modèle embarqué (prêt au déploiement)
-L'image peut embarquer le modèle et son analyse dans `catalog/bundle/` : au premier démarrage (volume `catalog-state` vide), ils sont recopiés dans `CATALOG_DIR` et le serveur produit des présentations **sans SharePoint ni `TEMPLATE_DIR`**. Le journal de démarrage indique le modèle utilisé. `refresh_template` reste possible ensuite si une source est configurée.
+L'image embarque dans `catalog/bundle/` les modèles PowerPoint et Word, leur analyse et la bibliothèque d'UO : au premier démarrage (volume `catalog-state` vide), les modèles sont recopiés dans `CATALOG_DIR` et le serveur produit présentations et documents Word **sans SharePoint ni `TEMPLATE_DIR`**. Le journal de démarrage indique les modèles utilisés et le nombre d'UO. `refresh_template` reste possible ensuite si une source est configurée.
 
-Préparer le paquet avant `docker compose build` (depuis un dossier contenant le `.potx` à jour, ou depuis SharePoint avec les variables `SP_*`) :
+Préparer le paquet avant `docker compose build` (depuis un dossier contenant les `.potx` et `.docx` à jour, ou depuis SharePoint avec les variables `SP_*`) :
 ```bash
 TEMPLATE_DIR=/chemin/vers/modeles python server.py bundle
 # → catalog/bundle/<modèle>.potx + pptx.json (analyse) et <modèle Word>.docx + docx.json
 python server.py bundle-uo /chemin/vers/reponses-ao
 # → catalog/bundle/uo_library.json (fiches UO extraites des mémoires techniques)
 ```
-> ⚠ `catalog/bundle/` est **exclu de Git** : le modèle est un document interne (C2 - restricted) et ce dépôt est public. Il est copié dans l'image au build : ne pas publier l'image sur un registre public (utiliser un registre privé).
+> ⚠ `catalog/bundle/` est **exclu de Git** : les modèles sont des documents internes (C2 - restricted), la bibliothèque d'UO reprend des extraits de réponses à appels d'offres, et ce dépôt est public. Il est copié dans l'image au build : ne pas publier l'image sur un registre public (utiliser un registre privé).
 
 Pour livrer un nouveau modèle : refaire `python server.py bundle`, reconstruire l'image, puis **vider le volume** `catalog-state` (`docker compose down -v`) ou appeler `refresh_template`, sinon le modèle déjà épinglé dans le volume est conservé.
 
@@ -81,6 +81,12 @@ Rendu :
 - options de champ : `upper` (majuscules saisies dans le modèle, `1` = 1re ligne seulement), `breaks` (lignes → sauts de ligne d'un même paragraphe), `anchor` (`"t"` = texte en haut), `bullets: false` (pas de puce héritée), `prefix` (lignes fixes ajoutées en tête), `default` ;
 - zones désignées par nom de forme (volet Sélection), `Nom#n` (n-ième forme de ce nom) ou `@idx` (espace réservé d'une disposition) : voir `list_slide_types`.
 - les **dépassements** de limites sont renvoyés au chat avec le lien, pour correction.
+
+**Accessibilité** (contrôlée à chaque génération, lecteurs d'écran et vérificateur d'accessibilité de PowerPoint) :
+- **titre** : chaque diapo a un titre ; s'il n'en a pas (fiches, conclusions, pages Niji, CGV), un titre est ajouté hors de la zone visible (`titre_accessible` du modèle, sinon premier champ significatif, sinon l'usage) ;
+- **ordre de lecture** (= ordre d'empilement des formes) : titre, puis champs dans l'ordre du catalogue ; chaque intitulé ou numéro fixe est lu juste avant le contenu qu'il introduit ; sans configuration (diapos utilisateur, pages Niji), découpage XY : colonnes puis bandes. Les formes décoratives gardent leur rang d'origine, et deux formes lues qui se chevauchent gardent l'ordre du modèle : le rendu visuel est inchangé ;
+- **tableaux** : première ligne déclarée comme ligne d'en-têtes, résumé des en-têtes en texte de remplacement ; une cellule d'en-tête vide est signalée au chat ;
+- **textes de remplacement** : images et formes sans texte de remplacement marquées **décoratives** ; texte de remplacement fourni par `"alt": {"Nom de forme": "texte"}` dans un modèle du catalogue ou à l'ajout d'une diapo utilisateur (`add_user_slides`, avec aussi `"ordre"` pour imposer l'ordre de lecture des champs).
 
 Ajouter une diapo au catalogue : `list_slide_types` (ou `layouts=True`) → repérer les zones → ajouter un modèle dans `catalog/pptx.json` → `refresh_template` pour vérifier → contrôler le rendu.
 
@@ -141,8 +147,8 @@ POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
 | `DOC_LANG` | `fr-FR` | Langue des documents |
 | `XLSX_TABLE_STYLE` | `TableStyleMedium2` | Style des tableaux Excel |
 | `OUTPUT_DIR` | `/out` (Docker) | Dossier des fichiers générés |
-| `CATALOG_DIR` | `/data/catalog` | État du catalogue PowerPoint (modèle épinglé, analyse) |
-| `MODELS_DIR` | `./catalog` | Configuration des diapos (`pptx.json`, ou `pptx-<prefixe>.json` par famille de modèles) |
+| `CATALOG_DIR` | `/data/catalog` | État : modèles PowerPoint et Word épinglés, analyse, diapos et cadres des utilisateurs, dépôts |
+| `MODELS_DIR` | `./catalog` | Configuration : `pptx.json` (diapos ; `pptx-<prefixe>.json` par famille de modèles), `docx.json` (blocs, cadres, plans types), `docx-styles.xml`, `bundle/` (modèles et bibliothèque d'UO embarqués) |
 | `HOST`, `PORT` | `0.0.0.0`, `8000` | Écoute du serveur (garder 8000 en Docker) |
 
 ## Lancement (Docker)
@@ -191,7 +197,7 @@ Si l'instance LibreChat est hébergée par un tiers, demander à l'administrateu
 pip install -r requirements.txt
 TEMPLATE_DIR=./modeles CATALOG_DIR=./.catalog MCP_API_KEY=test python server.py
 ```
-Le rendu PowerPoint suppose les polices N27 installées sur le poste qui ouvre le fichier (elles ne sont pas embarquées).
+Le rendu PowerPoint et Word (cadre Niji) suppose les polices N27 installées sur le poste qui ouvre le fichier (elles ne sont pas embarquées).
 
 ## TODO
 
@@ -199,9 +205,10 @@ Le rendu PowerPoint suppose les polices N27 installées sur le poste qui ouvre l
 - [x] **Tester l'image Docker** (01/10/2026, Docker 29.3 sous WSL 2, modèles en local) : image de 207 Mo construite, conteneur `healthy`, utilisateur non-root `app`, système de fichiers en lecture seule sauf `/out` et `/data/catalog`, `/mcp` refusé sans clé (401), 7 outils, `refresh_template`, catalogue, présentation de 28 diapos générée en 0,7 s et téléchargée, catalogue conservé après redémarrage, 126 Mo de mémoire utilisés sur 512 Mo.
 - [ ] Fuseau horaire : le conteneur est en UTC (la date « analysé le » a 2 h de décalage). Ajouter `tzdata` à l'image et `TZ=Europe/Paris`.
 - [x] **Modèle PowerPoint embarqué dans l'image** (`catalog/bundle`, hors Git) : testé en déploiement à nu (volume vierge, sans SharePoint ni `TEMPLATE_DIR`), présentation de 28 diapos produite.
-- [ ] Embarquer aussi les modèles Word et Excel (aujourd'hui relus sur SharePoint ou `TEMPLATE_DIR` à chaque génération).
+- [x] **Modèle Word et bibliothèque d'UO embarqués** : testés dans Docker sous WSL (16 outils exposés, catalogue Word servi, document généré et téléchargé).
+- [ ] Embarquer aussi le modèle Excel (aujourd'hui relu sur SharePoint ou `TEMPLATE_DIR` à chaque génération).
 - [ ] **Tester avec SharePoint** : app Entra ID en `Sites.Selected`, `SP_SITE_ID` / `SP_FOLDER` réels, récupération du modèle épinglé (testé uniquement avec `TEMPLATE_DIR`).
-- [ ] **Tester de bout en bout depuis LibreChat** : appel de `get_presentation_catalog` par le chat, qualité des plans proposés, prise en compte des dépassements signalés, lien de téléchargement via `PUBLIC_BASE_URL` derrière le reverse-proxy.
+- [ ] **Tester de bout en bout depuis LibreChat** : appel de `get_presentation_catalog` et `get_word_catalog` par le chat, qualité des plans proposés, prise en compte des dépassements signalés (longueurs, pages), lien de téléchargement via `PUBLIC_BASE_URL` derrière le reverse-proxy.
 - [ ] **Restreindre `refresh_template`** aux administrateurs (clé distincte ou outil non exposé au chat) : aujourd'hui tout utilisateur du chat peut changer le modèle épinglé.
 - [ ] Healthcheck du `Dockerfile` : utiliser `PORT` au lieu de 8000 en dur.
 
@@ -213,10 +220,14 @@ Le rendu PowerPoint suppose les polices N27 installées sur le poste qui ouvre l
 - [ ] **Contrôle des débordements** : les limites `max` sont des nombres de caractères estimés à l'œil. Il serait plus fiable de mesurer le texte avec les métriques des polices N27 et la taille des zones, et d'ajuster `max` d'après les rendus réels.
 - [ ] Libellés et ambiances des variantes (`variants` dans `catalog/pptx.json`) : saisis à la main, à revoir à chaque nouveau modèle (`refresh_template` signale les nouvelles dispositions mais pas leur couleur).
 - [ ] Polices N27 : vérifier la licence et l'éventuel embarquement dans les fichiers destinés aux clients.
+- [x] **Accessibilité** : titre sur chaque diapo, ordre de lecture logique, en-têtes de tableaux déclarés, images et formes décoratives marquées. Mesuré sur la présentation de 28 diapos : 6 diapos sans titre, 11 images et 23 formes sans texte de remplacement, 2 tableaux sans en-tête déclaré → 0 ; rendu identique au pixel près (hors en-têtes nommés).
+- [ ] Accessibilité, limites : quand un en-tête est posé sur un cadre plein (comitologie), le cadre est lu avant son en-tête pour ne pas le masquer ; les pages Niji figées ont leur texte dans la disposition (non lu par les lecteurs d'écran : seul le titre ajouté est annoncé) ; l'ordre des CGV suit la géométrie et peut placer un paragraphe avant son intertitre. Valider avec le vérificateur d'accessibilité de PowerPoint et un lecteur d'écran (NVDA).
+- [ ] Accessibilité Word : en-têtes de tableaux répétés en place ; vérifier les textes de remplacement des images du modèle (page de garde, présentation Niji) et l'ordre de lecture des zones de texte.
 
 ### Diapos de l'utilisateur
 - [x] Dépôt, analyse d'écart au modèle, ajout au catalogue personnel et génération : testé de bout en bout en HTTP (diapos conformes à 100/100, diapo retouchée en Arial avec couleur hors palette en alerte à 75/100, graphique et présentation hors modèle refusés, isolement entre deux utilisateurs, rendu vérifié).
-- [ ] Reconstruire et retester l'image Docker avec cette fonctionnalité (testée uniquement en local hors Docker) : écriture de `users/` et `imports/` dans le volume `catalog-state`, page de dépôt.
+- [x] Dans Docker : page de dépôt, analyse et écriture de `imports/` dans le volume `catalog-state` testées (déploiement de l'archive).
+- [ ] Dans Docker : ajout au catalogue personnel (`users/`) et génération avec une diapo utilisateur.
 - [ ] Tester l'en-tête `X-User-Id` avec LibreChat réel (`{{LIBRECHAT_USER_ID}}`) et le lien de dépôt derrière le reverse-proxy (taille maximale des requêtes).
 - [ ] **Décisions à valider** :
   - Arrivée du fichier : lien de dépôt servi par le serveur (choix actuel, aucun droit SharePoint supplémentaire, reverse-proxy à configurer pour 50 Mo) ou lecture dans le OneDrive/SharePoint de l'utilisateur (droits Graph plus larges).

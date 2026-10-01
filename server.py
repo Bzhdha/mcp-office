@@ -4,7 +4,7 @@ import io,os,re,json,time,secrets,zipfile,hmac,hashlib,shutil,httpx,uvicorn
 from pathlib import Path
 from urllib.parse import quote
 from docx import Document
-from docx.oxml import OxmlElement
+from docx.oxml import OxmlElement,parse_xml
 from docx.oxml.ns import qn
 from openpyxl import load_workbook,Workbook
 from openpyxl.worksheet.table import Table,TableStyleInfo
@@ -13,6 +13,7 @@ from pptx import Presentation
 from pptx.util import Emu
 from pptx.oxml.ns import qn as pq
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+from pptx.oxml import parse_xml as pparse
 from mcp.server.fastmcp import FastMCP,Context
 from starlette.responses import Response,JSONResponse,HTMLResponse
 import word as W
@@ -282,6 +283,93 @@ def _zone(s,key):
  n,_,i=key.rpartition("#")
  if n and i.isdigit():return[sh for sh in s.shapes if sh.name==n][int(i)-1:int(i)]
  return[sh for sh in s.shapes if sh.name==key]
+# ---------- Accessibilité PowerPoint : titre, ordre de lecture, en-têtes de tableaux, textes de remplacement ----------
+DECO='<a:ext xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" uri="{C183D7F6-B498-43B3-948B-1728B52AA6E4}"><adec:decorative xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="1"/></a:ext>'
+def _a11y_title(m,vals):
+ """Titre annoncé par les lecteurs d'écran : « titre_accessible » du modèle, sinon le premier champ significatif, sinon l'usage."""
+ if m.get("titre_accessible"):return m["titre_accessible"]
+ for k in("titre","message","etiquette","obj1_titre"):
+  v=vals.get(k)
+  if v:return plain(" ".join(map(str,v))if isinstance(v,list)else str(v)).replace("\v"," ").strip()
+ return re.split(r"[.:(]",m.get("usage","")or"")[0].strip()
+def _cnvpr(el):
+ for c in el:
+  if c.tag.endswith("Pr")and c.tag.startswith("{http://schemas.openxmlformats.org/presentationml"):  # nvSpPr, nvPicPr, nvGrpSpPr, nvGraphicFramePr, nvCxnSpPr
+   x=c.find(pq("p:cNvPr"))
+   if x is not None:return x
+ return None
+def _decorative(cnv):
+ if cnv is None or"decorative"in etree_tostring(cnv):return
+ ext=cnv.find(pq("a:extLst"))
+ if ext is None:ext=cnv.makeelement(pq("a:extLst"),{});cnv.append(ext)
+ ext.append(pparse(DECO))
+def etree_tostring(e):
+ from lxml import etree;return etree.tostring(e).decode()
+def _has_text(sh):
+ if getattr(sh,"has_table",False)and sh.has_table:return True
+ if sh.has_text_frame:return bool(sh.text_frame.text.strip())
+ return bool("".join(t.text or""for t in sh._element.iter(pq("a:t"))).strip())
+def _a11y(p,s,d,zmap,warn,i):
+ """Rend la diapo lisible par un lecteur d'écran : titre (masqué hors champ s'il manque), ordre de lecture logique,
+ première ligne des tableaux déclarée en en-tête, images et formes sans texte de remplacement marquées décoratives."""
+ W,H=p.slide_width,p.slide_height;tree=s.shapes._spTree
+ if s.shapes.title is None or not s.shapes.title.text_frame.text.strip():
+  t=(d.get("_title")or d.get("title")or"").strip()
+  if t:
+   if s.shapes.title is not None:tree.remove(s.shapes.title._element)
+   ids=[int(x)for x in tree.xpath(".//p:cNvPr/@id")]+[1]
+   tree.insert(2,pparse(f'<p:sp xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><p:nvSpPr><p:cNvPr id="{max(ids)+1}" name="Titre (accessibilité)"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="0" y="{H+200000}"/><a:ext cx="{W}" cy="500000"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="{LANG}" dirty="0"/><a:t>{_xesc(t)}</a:t></a:r></a:p></p:txBody></p:sp>'))
+ shapes=list(s.shapes);title=[x for x in shapes if x.is_placeholder and int(x.placeholder_format.type)in(1,3)][:1]
+ els={id(x._element):x for x in shapes}
+ F=[]
+ for k in d.get("_order")or[]:
+  for e in zmap.get(k,[]):
+   x=els.get(id(e))
+   if x is not None and x not in title and x not in F:F.append(x)
+ text=[x for x in shapes if _has_text(x)and x not in title and x not in F]
+ BB={id(x._element):_bb(x)for x in shapes};bbx=lambda x:BB[id(x._element)];box=lambda x:bbx(x)[:2]  # positions lues une fois (héritage coûteux)
+ if F:  # intitulés et numéros fixes : juste avant le contenu qu'ils introduisent (le plus proche, situé en dessous ou à droite)
+  slot={id(f):[]for f in F}
+  for x in text:
+   lx,ly=box(x)
+   tgt=min(F,key=lambda f:((box(f)[0]-lx)**2+(box(f)[1]-ly)**2)**.5+(0 if box(f)[1]>=ly-H*.07 else W))
+   slot[id(tgt)].append(x)
+  seq=[y for f in F for y in sorted(slot[id(f)],key=lambda x:(box(x)[1],box(x)[0]))+[f]]
+ else:seq=_xycut(text,bbx)  # sans configuration : colonnes puis bandes (découpage XY)
+ deco=[x for x in shapes if x not in title and x not in seq]
+ # Ordre de lecture = ordre d'empilement. Les formes décoratives (ignorées des lecteurs d'écran) gardent leur rang d'origine ;
+ # les formes lues prennent l'ordre logique dans les rangs restants, sauf deux formes qui se chevauchent : l'ordre du modèle
+ # est alors conservé pour ne pas masquer l'une par l'autre (le rendu du modèle prime).
+ rk={id(x._element):k for k,x in enumerate(shapes)};want=title+seq
+ def ov(a,b):
+  A,B=bbx(a),bbx(b);return min(A[2],B[2])-max(A[0],B[0])>36000 and min(A[3],B[3])-max(A[1],B[1])>36000
+ before={id(x._element):[y for y in want if y is not x and ov(x,y)and rk[id(y._element)]<rk[id(x._element)]]for x in want}
+ order=[];left=list(want)
+ while left:
+  x=next((x for x in left if all(y in order for y in before[id(x._element)])),left[0]);order.append(x);left.remove(x)
+ it=iter(order);new=[x if x in deco else next(it)for x in shapes]
+ tail=tree.find(pq("p:extLst"))
+ for x in new:
+  tree.remove(x._element);(tail.addprevious(x._element)if tail is not None else tree.append(x._element))
+ alt=d.get("_alt")or{}
+ for k,v in alt.items():
+  for x in _zone(s,k):
+   c=_cnvpr(x._element)
+   if c is not None:c.set("descr",str(v))
+ for x in shapes:
+  c=_cnvpr(x._element)
+  if getattr(x,"has_table",False)and x.has_table:
+   tp=x.table._tbl.tblPr;tp.set("firstRow","1")  # 1re ligne = en-têtes (annoncée comme telle)
+   h=[c.text.strip()for c in x.table.rows[0].cells]
+   if c is not None and not c.get("descr"):c.set("descr","Tableau : "+", ".join(v for v in h if v)[:200])
+   if any(not v for v in h)and not d.get("asis"):warn.append(f"diapo {i} : en-tête de tableau vide (colonne {h.index('')+1}) — nommer chaque colonne pour l'accessibilité")
+  elif x in deco or x.shape_type==13:
+   if c is not None and not c.get("descr"):_decorative(c)
+  for pic in x._element.iter(pq("p:pic")):  # images à l'intérieur des groupes
+   pc=pic.find(pq("p:nvPicPr")+"/"+pq("p:cNvPr"))
+   if pc is not None and not pc.get("descr"):_decorative(pc)
+def _xesc(t):return str(t).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;").replace('"',"&quot;")
+
 # ---------- Catalogue PowerPoint : modèle épinglé + analyse enregistrée + diapos autorisées ----------
 # État (CATALOG_DIR, volume) : copie du modèle épinglé et analyse (polices, inventaire des zones). Refaite seulement via refresh_template.
 # Configuration (MODELS_DIR, versionnée) : modèles de diapos exposés au chat (champs nommés, limites, textes fixes, règles).
@@ -367,7 +455,7 @@ def _expand(c,d,used,warn,amb=""):
  if not m:raise ValueError(f"Modèle de diapo inconnu « {n} » (voir get_presentation_catalog)")
  vs=_pickv(c,n,m,d,used,amb)
  SK=("type","layout","user","slide")
- if m.get("asis"):return[{**{k:v[k]for k in SK if k in v},"asis":True,"notes":d.get("notes")}for v in vs]
+ if m.get("asis"):return[{**{k:v[k]for k in SK if k in v},"asis":True,"notes":d.get("notes"),"_title":_a11y_title(m,{}),"_alt":m.get("alt")}for v in vs]
  src={k:vs[0][k]for k in SK if k in vs[0]}
  z=dict(m.get("fixed")or{});vals=d.get("fields")or{};F=m.get("fields")or{};anchors={}
  warn+=[f"diapo {d['_i']} ({n}) : champ inconnu « {k} » ignoré"for k in vals if k not in F]
@@ -386,7 +474,7 @@ def _expand(c,d,used,warn,amb=""):
    v=(f.get("prefix")or[])+L
   z[f["zone"]]=v
   if f.get("anchor")or f.get("bullets")is False:anchors[f["zone"]]={"anchor":f.get("anchor"),"bullets":f.get("bullets",True)}
- return[{**src,"zones":z,"anchors":anchors,"notes":d.get("notes")}]
+ return[{**src,"zones":z,"anchors":anchors,"notes":d.get("notes"),"_order":[f["zone"]for f in F.values()],"_title":_a11y_title(m,vals),"_alt":m.get("alt")}]
 def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance="",uid=""):
  c=catalog(template_prefix);U=_umodels(uid,template_prefix)if uid else{}
  if U:c={**c,"models":{**c["models"],**U}}  # diapos de l'utilisateur (catalogue étendu)
@@ -403,7 +491,8 @@ def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance="",
    if d["user"]not in uprs:uprs[d["user"]]=Presentation(str(_udir(uid,template_prefix)/d["user"]))
    s=_import(p,uprs[d["user"]].slides[int(d["slide"])-1])
   else:s=p.slides.add_slide(_layout(p,d["layout"]))if d.get("layout")else _dup(p,_pick(p,d.get("type"),bool(tb)))
-  for k,v,shs in[(k,v,_zone(s,k))for k,v in(d.get("zones")or{}).items()]:  # résolution avant suppression : « Nom#n » ne se décale pas
+  res=[(k,v,_zone(s,k))for k,v in(d.get("zones")or{}).items()];zmap={k:[x._element for x in shs]for k,v,shs in res}
+  for k,v,shs in res:  # résolution avant suppression : « Nom#n » ne se décale pas
    for sh in shs:
     done.add(sh.shape_id)
     if v is None:sh._element.getparent().remove(sh._element)  # null -> forme supprimée (ex. étiquette « EXEMPLE »)
@@ -430,6 +519,7 @@ def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance="",
    elif ph==18 and sh._element.tag==pq("p:sp"):sh._element.getparent().remove(sh._element)  # espace image vide
   if tb:W,H=p.slide_width,p.slide_height;_table(s.shapes.add_table(len(tb),max(map(len,tb)),Emu(W//20),Emu(H//4),Emu(W*9//10),Emu(H//2)).table,tb,fonts)
   if d.get("notes"):s.notes_slide.notes_text_frame.text=d["notes"]
+  _a11y(p,s,d,zmap,warn,len(p.slides)-len(orig))
  sl=p.slides._sldIdLst
  for s in orig:
   for x in list(sl):
@@ -473,13 +563,30 @@ def _theme(master):
  cs=re.search(r"<a:clrScheme.*?</a:clrScheme>",b,re.S);cl=dict(re.findall(r'<a:(dk1|lt1|dk2|lt2|accent\d|hlink|folHlink)>\s*<a:(?:srgbClr val|sysClr[^>]*lastClr)="([0-9A-Fa-f]{6})"',cs[0]if cs else""))
  return fo,{k:v.upper()for k,v in cl.items()}
 def _sig(lay):return sorted((h.placeholder_format.idx,int(h.placeholder_format.type))for h in lay.placeholders)
+def _xycut(items,box):
+ """Sens de lecture d'une mise en page sans configuration (découpage récursif XY) : colonnes séparées par un vide vertical
+ lues l'une après l'autre, sinon bandes horizontales de haut en bas."""
+ if len(items)<=1:return list(items)
+ def split(axis):
+  iv=sorted(items,key=lambda x:box(x)[axis]);groups=[[iv[0]]];end=box(iv[0])[axis+2]
+  for x in iv[1:]:
+   if box(x)[axis]>=end-18000:groups.append([x])
+   else:groups[-1].append(x)
+   end=max(end,box(x)[axis+2])
+  return groups
+ g=split(0)
+ if len(g)>1:return[y for c in g for y in _xycut(c,box)]
+ g=split(1)
+ if len(g)>1:return _xycut(g[0],box)+_xycut([y for c in g[1:]for y in c],box)
+ return sorted(items,key=lambda x:(box(x)[1],box(x)[0]))
+def _bb(x):return(x.left or 0,x.top or 0,(x.left or 0)+(x.width or 0),(x.top or 0)+(x.height or 0))
 def _fields(s):
  """Champs proposés pour une diapo utilisateur : chaque zone de texte ou tableau, dans l'ordre de lecture."""
  names=[sh.name for sh in s.shapes];seen={};F={};k=0;items=[]
  for sh in s.shapes:
   seen[sh.name]=seen.get(sh.name,0)+1;key=sh.name if names.count(sh.name)==1 else f"{sh.name}#{seen[sh.name]}"
   if sh.has_table or(sh.has_text_frame and sh.text_frame.text.strip()and not re.fullmatch(r"\s*[#\d]{1,2}([.,]\d{1,2})?\s*",sh.text_frame.text)):items.append((sh.top or 0,sh.left or 0,key,sh))
- for _,_,key,sh in sorted(items,key=lambda x:(round(x[0]/18e4),x[1])):
+ for _,_,key,sh in _xycut(items,lambda it:_bb(it[3])):
   if sh.has_table:F[f"tableau{sum(1 for x in F if x.startswith('tableau'))+1}"]={"zone":key,"kind":"table","max_rows":len(sh.table.rows)+3,"max_cols":len(sh.table.columns),"exemple":" | ".join(c.text for c in sh.table.rows[0].cells)[:80]};continue
   ps=[p.text.replace("\v"," ")for p in sh.text_frame.paragraphs if p.text.strip()]
   t=sh.is_placeholder and int(sh.placeholder_format.type)in(1,3)and"titre"not in F
@@ -689,7 +796,7 @@ def get_slides_report(ctx:Context,import_id:str)->str:
  return _report_txt(_rep(d,import_id,m))+"\n\nPour ajouter : add_user_slides(import_id, slides=[{\"diapo\":n,\"nom\":\"mon_modele\",\"usage\":\"à quoi sert la diapo\"}]). Diapos en « refus » : seulement avec forcer=true, après accord explicite de l'utilisateur."
 @mcp.tool()
 def add_user_slides(ctx:Context,import_id:str,slides:list[dict],forcer:bool=False)->str:
- """Ajoute des diapos analysées au catalogue de l'utilisateur. `slides`: [{"diapo":3,"nom":"bilan_projet","usage":"…","champs":{"texte1":"col1_titre",…}}]. Renommer les champs d'après leurs exemples (rapport) pour que les noms disent leur rôle. Les diapos en alerte sont ajoutées avec leur alerte, à signaler à l'utilisateur ; en refus, seulement si forcer=true."""
+ """Ajoute des diapos analysées au catalogue de l'utilisateur. `slides`: [{"diapo":3,"nom":"bilan_projet","usage":"…","champs":{"texte1":"col1_titre",…},"ordre":["titre","col1_titre",…] (facultatif : ordre de lecture des champs),"alt":{"Image 3":"texte de remplacement"} (facultatif)}]. Renommer les champs d'après leurs exemples (rapport) pour que les noms disent leur rôle. Les diapos en alerte sont ajoutées avec leur alerte, à signaler à l'utilisateur ; en refus, seulement si forcer=true."""
  d,m=_imp(import_id,ctx);r=_rep(d,import_id,m)
  base=catalog(m["prefix"])["models"];ud=_udir(m["uid"],m["prefix"]);ud.mkdir(parents=True,exist_ok=True)
  b=(d/"deck.pptx").read_bytes();fn=hashlib.sha256(b).hexdigest()[:16]+".pptx";(ud/fn).write_bytes(b)
@@ -701,7 +808,8 @@ def add_user_slides(ctx:Context,import_id:str,slides:list[dict],forcer:bool=Fals
   if not re.fullmatch(r"[a-z0-9_]{3,40}",nom)or nom in base:out.append(f"✗ diapo {n} : nom « {nom} » invalide ou déjà utilisé par le modèle d'entreprise (a-z, 0-9, _)");continue
   if a["niveau"]=="refus"and not forcer:out.append(f"✗ diapo {n} : refusée, trop éloignée du modèle ({a['score']}/100) : {'; '.join(a['alertes'])}");continue
   F={(x.get("champs")or{}).get(k,k):v for k,v in a["champs"].items()}
-  M[nom]={"usage":str(x.get("usage")or a["titre"])[:200],"source":{"user":fn,"slide":n},"fields":F,"origine":f"{r['fichier']}, diapo {n}","ajoute":time.strftime("%Y-%m-%d"),
+  if x.get("ordre"):F={k:F[k]for k in x["ordre"]if k in F}|{k:v for k,v in F.items()if k not in x["ordre"]}  # ordre de lecture imposé
+  M[nom]={"usage":str(x.get("usage")or a["titre"])[:200],"source":{"user":fn,"slide":n},"fields":F,"alt":x.get("alt")or{},"origine":f"{r['fichier']}, diapo {n}","ajoute":time.strftime("%Y-%m-%d"),
    "conformite":{"score":a["score"],"niveau":a["niveau"],"alertes":a["alertes"],"force":a["niveau"]=="refus"}}
   out.append(("⚠"if a["niveau"]!="conforme"else"✓")+f" « {nom} » ajouté ({a['score']}/100, {a['niveau']})"+(f" — écarts : {'; '.join(a['alertes'])}"if a["niveau"]!="conforme"else""))
  mf.write_text(json.dumps(M,ensure_ascii=False,indent=1),"utf8")

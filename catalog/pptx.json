@@ -8,7 +8,8 @@
   "Respecter les limites de caractères et de lignes : le texte ne doit jamais déborder des zones.",
   "Charte : une seule ambiance couleur par document (paramètre « ambiance ») ; ne pas imposer de « variante » d'une autre ambiance sans demande explicite.",
   "Les diapos de la rubrique « Niji » ont un contenu officiel figé : les insérer telles quelles, sans champ.",
-  "Ne pas inventer de chiffres, de noms ou de références client : laisser un libellé explicite à compléter (ex. « [Nom du client] »)."
+  "Ne pas inventer de chiffres, de noms ou de références client : laisser un libellé explicite à compléter (ex. « [Nom du client] »).",
+  "Accessibilité : chaque tableau a une ligne d'en-têtes entièrement nommée ; le titre de chaque diapo est explicite (il est annoncé par les lecteurs d'écran)."
  ],
  "ambiances": {
   "orange": "rose-orangé (chaud)",
@@ -927,7 +928,7 @@
      "kind": "table",
      "max_rows": 11,
      "max_cols": 6,
-     "help": "1re ligne = en-têtes (1re cellule souvent vide) ; cellules ≤ 25 car."
+     "help": "1re ligne = en-têtes, une par colonne, toutes nommées (accessibilité) ; cellules ≤ 25 car."
     }
    }
   },
@@ -950,7 +951,7 @@
      "kind": "table",
      "max_rows": 11,
      "max_cols": 2,
-     "help": "1re ligne = en-têtes, ex. [\"\", \"Usage\"] ; libellés ≤ 12 car., descriptions ≤ 90 car."
+     "help": "1re ligne = en-têtes nommés, ex. [\"Env.\", \"Usage\"] (accessibilité) ; 1re colonne étroite : en-tête et libellés ≤ 10 car., descriptions ≤ 90 car."
     }
    }
   },
@@ -1694,7 +1695,8 @@
      "zone": "@13",
      "max": 20
     }
-   }
+   },
+   "titre_accessible": "À très vite"
   },
   "conclusion_titre": {
    "usage": "Dernière diapo sur dégradé avec un message de fin personnalisé et le contact.",
@@ -1732,7 +1734,8 @@
      "zone": "@13",
      "max": 20
     }
-   }
+   },
+   "titre_accessible": "Conclusion"
   }
  },
  "ignored_layouts": {

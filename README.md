@@ -74,9 +74,57 @@ mcpServers:
 ```
 Si l'instance LibreChat est hébergée par un tiers, demander à l'administrateur d'ajouter ce bloc (ou d'autoriser les serveurs MCP utilisateurs) et d'ouvrir le flux réseau vers le serveur.
 
-## Test local sans SharePoint
+## Installation en local (poste de travail)
+
+### 1. Prérequis
+- Python 3.11 ou plus récent (`python --version`), ou Docker Desktop.
+- Les modèles d'entreprise sur le poste. Le plus simple : synchroniser le dossier SharePoint des modèles avec OneDrive (bouton « Synchroniser » dans SharePoint) et pointer `TEMPLATE_DIR` dessus. Les modèles se mettent alors à jour tout seuls, sans configuration Entra ID.
+- Pour voir les présentations avec la bonne police : polices N27 installées sur le poste.
+
+### 2. Installation
 ```bash
+git clone https://github.com/Bzhdha/mcp-office.git
+cd mcp-office
+python -m venv .venv
+# macOS / Linux
+source .venv/bin/activate
+# Windows (PowerShell)
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-TEMPLATE_DIR=./modeles MCP_API_KEY=test python server.py
 ```
-Ne pas versionner les modèles d'entreprise (documents classifiés C2) dans ce dépôt.
+
+### 3. Lancement
+macOS / Linux :
+```bash
+export TEMPLATE_DIR="$HOME/Library/CloudStorage/OneDrive-Niji/Modeles"   # dossier synchronisé (adapter le chemin)
+export MCP_API_KEY="une-cle-longue-et-aleatoire"
+export PUBLIC_BASE_URL="http://localhost:8000"
+python server.py
+```
+Windows (PowerShell) :
+```powershell
+$env:TEMPLATE_DIR="$env:USERPROFILE\Niji\Modeles - Documents"   # dossier synchronisé (adapter le chemin)
+$env:MCP_API_KEY="une-cle-longue-et-aleatoire"
+$env:PUBLIC_BASE_URL="http://localhost:8000"
+python server.py
+```
+Pour générer une clé : `python -c "import secrets;print(secrets.token_urlsafe(32))"`.
+
+Avec Docker (même résultat, dossier de modèles monté en lecture seule) :
+```bash
+docker build -t mcp-office .
+docker run --rm -p 8000:8000 -e MCP_API_KEY=... -e PUBLIC_BASE_URL=http://localhost:8000 \
+  -e TEMPLATE_DIR=/templates -v "/chemin/vers/Modeles:/templates:ro" mcp-office
+```
+
+### 4. Vérification
+- `http://localhost:8000/health` doit répondre `{"ok":true}`.
+- Tester les outils sans client IA avec MCP Inspector : `npx @modelcontextprotocol/inspector`, transport **Streamable HTTP**, URL `http://localhost:8000/mcp`, en-tête `Authorization: Bearer <MCP_API_KEY>`. Appeler `list_templates`, puis `list_slide_types`.
+- Les liens de téléchargement renvoyés pointent vers `PUBLIC_BASE_URL` et expirent après `FILE_TTL` secondes (1 h par défaut).
+
+### 5. Brancher un client MCP
+- **LibreChat lancé sur le même poste** (Docker) : bloc `mcpServers` ci-dessus avec `url: http://host.docker.internal:8000/mcp`.
+- **LibreChat hébergé (instance de l'entreprise)** : l'instance ne peut pas joindre `localhost`. Le serveur doit être déployé sur une machine accessible par LibreChat (Docker derrière le reverse-proxy HTTPS interne, cf. « Lancement »), avec `PUBLIC_BASE_URL` égal à son adresse publique interne.
+- **Tout client MCP compatible HTTP** (Claude Desktop, VS Code…) : URL `http://localhost:8000/mcp` et en-tête `Authorization`.
+
+Ne pas versionner les modèles d'entreprise (documents classifiés C2) dans ce dépôt : le `.gitignore` les exclut.

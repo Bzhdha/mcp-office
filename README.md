@@ -5,7 +5,11 @@ Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Ex
 ## Outils exposés
 | Outil | Entrée | Sortie |
 |---|---|---|
-| `create_word` | `title`, `markdown` (titres, listes, tableaux, gras/italique, code) | .docx |
+| `get_word_catalog` | – | blocs Word disponibles, cadres, ambiances, plans types, bibliothèque d'UO (à appeler avant `create_word_document`) |
+| `create_word_document` | `titre`, `blocs:[{type,…}]`, `sous_titre`, `cadre`, `ambiance`, `historique`, `interlocuteurs`, `options` | .docx au format du modèle ou du cadre client + nombre de pages |
+| `create_word` | `title`, `markdown` | .docx simple (Markdown converti en blocs, même moteur) |
+| `search_uo` / `get_uo` | `recherche` / `id` | bibliothèque d'unités d'œuvre issues des réponses précédentes |
+| `save_word_cadre` | `nom`, `parametres` | enregistre un cadre client réutilisable (police, taille, marges, pages…) |
 | `create_excel` | `title`, `sheets:[{name, rows}]` (1re ligne = en-têtes → tableau Excel) | .xlsx |
 | `get_presentation_catalog` | – | diapos PowerPoint autorisées : usage, champs, limites, règles de rédaction (à appeler avant `create_powerpoint`) |
 | `create_powerpoint` | `title`, `slides:[{model, fields, variante, notes}]`, `ambiance` | .pptx + liste des dépassements à corriger |
@@ -21,7 +25,18 @@ Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Ex
 
 ## Fonctionnement
 - **Dernier modèle** : liste le dossier via Microsoft Graph, prend le fichier `.dotx/.docx`, `.xltx/.xlsx`, `.potx/.pptx` le plus récemment modifié ; cache invalidé par eTag.
-- **Style par défaut** : Word → styles `Title`, `Heading n`, `List Bullet/Number`, `Table Grid` du modèle (repli si absents) ; le contenu d'exemple du modèle est supprimé, la mise en page conservée. Excel → 1re feuille du modèle dupliquée, données sous l'en-tête existant. PowerPoint → voir ci-dessous.
+- **Style par défaut** : Excel → 1re feuille du modèle dupliquée, données sous l'en-tête existant. Word et PowerPoint → voir ci-dessous.
+
+### Word : blocs, cadres et unités d'œuvre
+Le modèle `C2-Niji-Word*` est **épinglé** comme le modèle PowerPoint (embarqué dans `catalog/bundle`, `refresh_template(type="docx")` pour en changer). Moteur : `word.py` ; configuration : `catalog/docx.json`.
+
+- **Début de document repris du modèle** : page de garde (titre, sous-titre), historique des versions, vos interlocuteurs (sans photo d'exemple), sommaire (mis à jour à l'ouverture dans Word). Le corps d'exemple est remplacé par les blocs ; la 4e de couverture est conservée ; présentation Niji et CGV en option.
+- **Blocs** : `titre` (niveaux 1 à 4, numérotation du modèle), `paragraphe` (mise en avant, légende), `liste`, `liste_numerotee`, `tableau` (en-tête coloré répété), `encadre`, `citation`, `chiffres_cles`, `tableau_risques` (probabilité × gravité, criticité colorée), `fiche_uo`, `fiche_profil`, `saut_de_page`, `presentation_niji`. Listes à puces à la charte (puce colorée, sous-niveaux).
+- **Ambiances** : couleur des encadrés, fiches et puces (violet, magenta, rose, orange, turquoise, bleu, sobre).
+- **Cadres** : `niji` (N27 Light 10,5 pt, mots clés en N27 Medium, marges du modèle) ou cadre imposé par le client, passé par nom ou en paramètres : `police_texte`, `police_titres`, `taille`, `interligne`, `marges_cm`, `format`, `pages_max`, `couleurs` (`sobre` = gris), `couleur_titres`, `justifie`, `strict` (toute police du document suit le cadre, page de garde comprise), et les éléments `page_de_garde`, `historique`, `interlocuteurs`, `sommaire`, `presentation_niji`, `cgv`. Cadres d'exemple : `client_arial_11`, `client_compact_10`. `save_word_cadre` enregistre un cadre par utilisateur (ex. exigences d'un client récurrent).
+- **Nombre de pages** : exact si LibreOffice (`soffice`) est présent dans l'image, sinon **estimation** (écart constaté de ± 2 pages sur 12 à 14 pages) ; un dépassement de `pages_max` est signalé avec le pourcentage à retirer.
+- **Unités d'œuvre** : `fiche_uo` reproduit la présentation des réponses à appels d'offres (titre coloré, rubriques Objectif, Prérequis, Méthode, Livrables, Facteurs clés de succès, Principaux risques, Profils et hypothèses de charge, tableau de charge facultatif). La **bibliothèque d'UO** est extraite des réponses passées : `python server.py bundle-uo <dossier de .docx>` → `catalog/bundle/uo_library.json` (hors Git, contenu client confidentiel) ; le chat la consulte avec `search_uo` / `get_uo` et adapte la fiche.
+- **Plans types** : mémoire technique, réponse organisation / RH, plan d'assurance sécurité (dans `catalog/docx.json`).
 
 ### PowerPoint : catalogue de diapos
 Le chat ne manipule pas le modèle directement : il choisit parmi des **diapos autorisées**, présentées par rubrique (Ouverture, Structure, Messages, Contenu, Zoom, Démarche, Chiffres, Niji, Annexes, Clôture), et remplit des **champs nommés** (`titre`, `col1_points`…). Le serveur s'occupe de la mise en forme.
@@ -50,7 +65,9 @@ L'image peut embarquer le modèle et son analyse dans `catalog/bundle/` : au pre
 Préparer le paquet avant `docker compose build` (depuis un dossier contenant le `.potx` à jour, ou depuis SharePoint avec les variables `SP_*`) :
 ```bash
 TEMPLATE_DIR=/chemin/vers/modeles python server.py bundle
-# → catalog/bundle/<modèle>.potx + catalog/bundle/pptx.json (analyse)
+# → catalog/bundle/<modèle>.potx + pptx.json (analyse) et <modèle Word>.docx + docx.json
+python server.py bundle-uo /chemin/vers/reponses-ao
+# → catalog/bundle/uo_library.json (fiches UO extraites des mémoires techniques)
 ```
 > ⚠ `catalog/bundle/` est **exclu de Git** : le modèle est un document interne (C2 - restricted) et ce dépôt est public. Il est copié dans l'image au build : ne pas publier l'image sur un registre public (utiliser un registre privé).
 
@@ -160,6 +177,9 @@ mcpServers:
       choisis une ambiance couleur, en respectant les limites, puis appelle create_powerpoint.
       Si des dépassements sont signalés, raccourcis les textes concernés et regénère.
       N'appelle refresh_template que si l'utilisateur annonce un nouveau modèle d'entreprise.
+      Word : appelle d'abord get_word_catalog ; si le client impose un cadre (police, taille,
+      marges, nombre de pages), passe-le dans « cadre » ; pour les unités d'œuvre, cherche une
+      UO existante (search_uo, get_uo) et adapte-la au nouveau client avant create_word_document.
       Si l'utilisateur veut réutiliser des diapos de sa propre présentation : add_slides_link,
       puis get_slides_report ; présente-lui les alertes d'écart au modèle avant add_user_slides,
       et ne force jamais une diapo refusée sans son accord explicite.
@@ -210,9 +230,17 @@ Le rendu PowerPoint suppose les polices N27 installées sur le poste qui ouvre l
 - [ ] Durée de conservation des présentations déposées et des catalogues personnels (RGPD, confidentialité des contenus) ; outil de purge.
 - [ ] Après un `refresh_template`, revérifier les diapos utilisateur (dispositions disparues du nouveau modèle).
 
-### Word et Excel
-- [ ] Appliquer la même approche que PowerPoint : modèle épinglé + catalogue (styles autorisés, blocs types) au lieu du « dernier modèle » relu à chaque génération.
-- [ ] Vérifier le rendu avec les modèles Niji réels (`C2-Niji-Word_Modele de doc-2026`) : styles de titres, listes, tableaux, page de garde.
+### Word
+- [x] Modèle Word épinglé et embarqué, catalogue de blocs, cadres client, bibliothèque d'UO (16 fiches extraites de 2 mémoires techniques) : testé en HTTP et rendu vérifié dans Word (charte Niji avec présentation et CGV, cadre Arial 11 sobre, cadre Times 12 avec dépassement de pages signalé, cadre client enregistré puis réutilisé).
+- [ ] Nombre de pages exact : ajouter LibreOffice (`libreoffice-writer`) à l'image (environ 300 Mo) ou garder l'estimation ; recalibrer l'estimation sur davantage de documents.
+- [ ] Images : logo client en page de garde, photos des interlocuteurs, illustrations dans le corps.
+- [ ] Champs de la page de garde propres au client (nom du client, référence de la consultation, lot) et en-tête aux couleurs du client.
+- [ ] Bibliothèque d'UO : l'alimenter avec d'autres réponses, la rendre consultable par équipe, purger les mentions propres à l'ancien client à l'extraction.
+- [ ] Autres fiches récurrentes à extraire des réponses : fiches profils (CV), tableaux de références, matrices de compétences.
+- [ ] Contrôle de conformité d'un document Word déposé par l'utilisateur (équivalent de « Mes diapos »).
+
+### Excel
+- [ ] Appliquer la même approche (modèle épinglé, catalogue) : aujourd'hui dernier modèle relu à chaque génération.
 
 ### Qualité et exploitation
 - [ ] **Tests automatisés** : génération de chaque type de diapo du catalogue, validité du XML (ouverture sans réparation par PowerPoint), contrôle des polices, non-régression visuelle (export PNG comparé à une référence).

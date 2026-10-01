@@ -15,6 +15,7 @@ from pptx.oxml.ns import qn as pq
 from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from mcp.server.fastmcp import FastMCP,Context
 from starlette.responses import Response,JSONResponse,HTMLResponse
+import word as W
 
 E=os.environ.get
 TENANT,CID,CSEC,SITE,FOLDER=E("SP_TENANT_ID"),E("SP_CLIENT_ID"),E("SP_CLIENT_SECRET"),E("SP_SITE_ID"),E("SP_FOLDER","Modeles")
@@ -87,37 +88,69 @@ def _save(kind,name,obj):
  for f in OUT.iterdir():
   if f.stat().st_mtime<time.time()-TTL:shutil.rmtree(f,ignore_errors=True)if f.is_dir()else f.unlink(missing_ok=True)
  tok=secrets.token_urlsafe(24);safe=re.sub(r"[^\w\-. ]","_",name)[:80].strip()or"document"
- d=OUT/tok;d.mkdir();obj.save(d/f"{safe}.{kind}");return f"{BASE}/files/{tok}/{quote(safe)}.{kind}"
+ d=OUT/tok;d.mkdir();obj.save(d/f"{safe}.{kind}");_save.path=d/f"{safe}.{kind}";return f"{BASE}/files/{tok}/{quote(safe)}.{kind}"
 
-def make_docx(title,markdown,template_prefix=""):
- tn,b=latest("docx",template_prefix);doc=Document(_untemplate(b));body=doc.element.body
- for e in list(body):
-  if e.tag!=qn("w:sectPr"):body.remove(e)
- names={s.name for s in doc.styles};st=lambda*n:next((x for x in n if x in names),None)
- doc.core_properties.title=title;doc.core_properties.language=LANG
- def para(t,style=None,pre=""):
-  p=doc.add_paragraph(style=style);pre and p.add_run(pre)
-  for x,b_,i_,c in runs(t):r=p.add_run(x);r.bold=b_ or None;r.italic=i_ or None;c and setattr(r.font,"name","Consolas")
-  return p
- if title:doc.add_heading(title,0)if st("Title")else para(title,st("Heading 1"))
- for bl in blocks(markdown):
-  k=bl[0]
-  if k=="h":doc.add_heading(plain(bl[2]),min(bl[1],9))
+# ---------- Word : modèle épinglé, catalogue de blocs, cadres, bibliothèque d'UO (moteur dans word.py) ----------
+_wcat={}
+def wcatalog(refresh=False):
+ """Modèle Word épinglé (comme PowerPoint) : premier usage depuis catalog/bundle, sinon source ; refresh=True pour changer de modèle."""
+ if"c"in _wcat and not refresh:return _wcat["c"]
+ cfg=json.loads((MODELS/"docx.json").read_text("utf8"));sf=CAT/"docx.json";st=json.loads(sf.read_text("utf8"))if sf.is_file()else{};bf=BUNDLE/"docx.json"
+ if not refresh and not st.get("template")and bf.is_file()and BUNDLE!=CAT:
+  bs=json.loads(bf.read_text("utf8"))
+  if(BUNDLE/bs.get("template","")).is_file():CAT.mkdir(parents=True,exist_ok=True);(CAT/bs["template"]).write_bytes((BUNDLE/bs["template"]).read_bytes());sf.write_text(bf.read_text("utf8"),"utf8");st=bs
+ if refresh or not st.get("template")or not(CAT/st["template"]).is_file():
+  name,b=latest("docx",cfg.get("prefixe_modele",""));CAT.mkdir(parents=True,exist_ok=True);(CAT/name).write_bytes(b)
+  st={"template":name,"analyzed":time.strftime("%Y-%m-%d %H:%M")};sf.write_text(json.dumps(st,ensure_ascii=False,indent=1),"utf8")
+ b=_untemplate((CAT/st["template"]).read_bytes()).getvalue();warn=[]
+ try:W.Builder(b,cfg,dict(cfg["cadres"]["niji"]),cfg["ambiance_defaut"])  # vérifie les repères du modèle
+ except Exception as e:warn.append(f"repères du modèle Word introuvables ({e}) : adapter « reperes » dans catalog/docx.json")
+ _wcat["c"]={**st,"cfg":cfg,"bytes":b,"warnings":warn};return _wcat["c"]
+def _uolib():
+ for f in(CAT/"uo_library.json",BUNDLE/"uo_library.json"):
+  if f.is_file():return json.loads(f.read_text("utf8"))
+ return[]
+def _ucadres(uid):
+ f=CAT/"users"/uid/"cadres.json";return json.loads(f.read_text("utf8"))if uid and f.is_file()else{}
+def _cadre(cfg,cadre,uid=""):
+ """Cadre effectif : nom (charte « niji », cadre prédéfini ou enregistré par l'utilisateur) ou paramètres, appliqués sur le cadre de base."""
+ C=cfg["cadres"];U=_ucadres(uid);base=dict(C["niji"])
+ if isinstance(cadre,str)and cadre.strip():
+  n=cadre.strip()
+  if n in C:return{**base,**C[n],"nom":n}
+  if n in U:return{**base,**(C.get(U[n].get("base"))or{}),**U[n],"nom":n}
+  raise ValueError(f"Cadre inconnu « {n} » ; cadres disponibles : {', '.join(list(C)+list(U))}")
+ if isinstance(cadre,dict)and cadre:
+  bn=cadre.get("base");B={**base,**(C.get(bn)or U.get(bn)or{})}if bn else base
+  r={**B,**{k:v for k,v in cadre.items()if k!="base"},"nom":f"personnalisé (base {bn or 'niji'})"}
+  if"strict"not in cadre and any(k in cadre for k in("police_texte","police_titres","taille")):r["strict"]=True
+  if r.get("strict")and"gras_police"not in cadre:r["gras_police"]=None
+  return r
+ return{**base,"nom":"niji"}
+def make_word(titre,blocs,sous_titre="",cadre=None,ambiance="",historique=None,interlocuteurs=None,options=None,uid=""):
+ c=wcatalog();cfg=c["cfg"];cad={**_cadre(cfg,cadre,uid),**(options or{})}
+ amb=ambiance or("sobre"if cad.get("couleurs")=="sobre"else cfg["ambiance_defaut"])
+ B=W.Builder(c["bytes"],cfg,cad,amb)
+ if amb not in cfg["ambiances"]:B.warn.append(f"ambiance « {amb} » inconnue ({', '.join(cfg['ambiances'])})")
+ B.front(titre,sous_titre,historique or[{"version":"1.0","date":time.strftime("%d/%m/%Y"),"modifications":"Création"}],interlocuteurs or[],cad)
+ for i,b in enumerate(blocs or[],1):B.block(b if isinstance(b,dict)else{"type":"paragraphe","texte":str(b)},i)
+ if cad.get("presentation_niji")and not any(isinstance(b,dict)and b.get("type")=="presentation_niji"for b in blocs or[]):B.b_presentation_niji({})
+ doc=B.finish(cad);doc.core_properties.title=titre;doc.core_properties.language=LANG
+ return c["template"],doc,B.warn,cad
+def md_blocks(md):
+ """Markdown (#, -, 1., |, ```) -> blocs du catalogue Word."""
+ out=[]
+ for bl in blocks(md):
+  k=bl[0];last=out[-1]if out else{}
+  if k=="h":out.append({"type":"titre","niveau":min(bl[1],4),"texte":plain(bl[2])})
   elif k in("ul","num"):
-   base="List Bullet"if k=="ul"else"List Number";s=st(base+(f" {bl[1]+1}"if bl[1]else""),base,"List Paragraph")
-   para(bl[2],s,""if s and s.startswith(base)else("• "if k=="ul"else"- "))
-  elif k=="code":para(bl[1],st("Code","HTML Preformatted"))
-  elif k=="table":
-   rows=bl[1];nc=max(map(len,rows));t=doc.add_table(rows=0,cols=nc);t.style=st("Table Grid","Light Grid Accent 1")
-   for ri,r in enumerate(rows):
-    cells=t.add_row().cells
-    for ci in range(nc):
-     c=cells[ci];c.text=plain(r[ci])if ci<len(r)else""
-     if ri==0:
-      for rn in c.paragraphs[0].runs:rn.bold=True
-   h=t.rows[0]._tr.get_or_add_trPr();e=OxmlElement("w:tblHeader");e.set(qn("w:val"),"true");h.append(e)  # en-tête répété (accessibilité)
-  else:para(bl[1])
- return tn,doc
+   t="liste"if k=="ul"else"liste_numerotee";ln="  "*bl[1]+bl[2]
+   if last.get("type")==t:last["elements"].append(ln)
+   else:out.append({"type":t,"elements":[ln]})
+  elif k=="table":out.append({"type":"tableau","entetes":bl[1][0],"lignes":bl[1][1:]})
+  elif k=="code":out.append({"type":"encadre","contenu":bl[1].split("\n")})
+  else:out.append({"type":"paragraphe","texte":bl[1]})
+ return out
 
 def _num(v):
  if isinstance(v,str):
@@ -524,9 +557,60 @@ def list_templates()->str:
   r.append(f"{k}: "+(", ".join(x["name"]for x in c)or"aucun")+(f" (utilisé: {c[0]['name']})"if c else""))
  return"\n".join(r)
 @mcp.tool()
-def create_word(title:str,markdown:str,filename:str="",template_prefix:str="")->str:
- """Crée un document Word (.docx) avec le dernier modèle d'entreprise. `markdown`: contenu (titres #, listes -, 1., tableaux |, **gras**, *italique*, blocs ```). `template_prefix`: filtre optionnel sur le nom du modèle."""
- _chk(title,markdown);tn,d=make_docx(title,markdown,template_prefix);return _ret("docx",filename or title,tn,d)
+def create_word(ctx:Context,title:str,markdown:str,filename:str="",cadre:str="")->str:
+ """Crée un document Word (.docx) simple à partir de Markdown (titres #, listes -, 1., tableaux |, **gras**), au format du modèle d'entreprise. Pour un document structuré (encadrés, fiches UO, risques, profils, cadre client), utiliser create_word_document."""
+ _chk(title,markdown);return _word_out(title,md_blocks(markdown),"",cadre or None,"",None,None,None,filename,_uid(ctx))
+def _word_out(titre,blocs,sous_titre,cadre,ambiance,historique,interlocuteurs,options,filename,uid):
+ tn,doc,w,cad=make_word(titre,blocs,sous_titre,cadre,ambiance,historique,interlocuteurs,options,uid)
+ u=_save("docx",filename or titre,doc);n,exact=W.count_pages(_save.path,doc,cad)
+ pm=cad.get("pages_max");lim=f" / {pm} max"if pm else""
+ if pm and n>int(pm):w.append(f"le document fait {'' if exact else 'environ '}{n} pages pour {pm} autorisées : réduire d'environ {round(100*(n-int(pm))/n)} % ou alléger les annexes")
+ return(f"Document généré avec le modèle « {tn} », cadre « {cad['nom']} » ({cad.get('police_texte')}, {cad.get('taille')} pt) : [{filename or titre}.docx]({u}) (lien valable {TTL//60} min)\n"
+  +f"Pages : {'' if exact else '≈ '}{n}{lim}{'' if exact else ' (estimation ; le sommaire se met à jour à l’ouverture dans Word)'}"+("\n\nÀ corriger :\n- "+"\n- ".join(w)if w else""))
+@mcp.tool()
+def get_word_catalog(ctx:Context)->str:
+ """À appeler avant create_word_document : blocs disponibles (paragraphes, listes, tableaux, encadrés, fiches UO, risques, profils…), cadres (charte Niji ou contraintes client : police, taille, marges, pages), ambiances, plans types de réponses et bibliothèque d'UO."""
+ c=wcatalog();g=c["cfg"];U=_ucadres(_uid(ctx));lib=_uolib()
+ cad=lambda n,x:f"* {n} — {x.get('description','')}"+(f" [{', '.join(f'{k}={v}' for k,v in x.items() if k not in('description','base') and v not in(None,'',False))}]")
+ return(f"Modèle Word « {c['template']} » (épinglé le {c['analyzed']}).\nRègles :\n"+"\n".join(f"- {r}"for r in g["regles"])
+  +"\n\n## Cadres (paramètre « cadre » : nom, ou paramètres {…} éventuellement avec \"base\")\n"+"\n".join(cad(n,x)for n,x in{**g["cadres"],**U}.items())
+  +"\nParamètres de cadre : "+"; ".join(f"{k} = {v}"for k,v in g["parametres_cadre"].items())
+  +"\n\n## Ambiances (couleur des encadrés, fiches UO, profils, puces)\n"+"; ".join(f"{k} = {v['label']}"for k,v in g["ambiances"].items())+f" (défaut : {g['ambiance_defaut']})"
+  +"\n\n## Blocs (liste « blocs » de create_word_document, dans l'ordre)\n"+"\n".join(f"* {n} — {b['usage']}"+(" | "+"; ".join(f"{k} : {v}"for k,v in b["parametres"].items())if b["parametres"]else"")for n,b in g["blocs"].items())
+  +"\nRubriques usuelles d'une fiche UO : "+", ".join(g["rubriques_uo"])
+  +"\n\n## Plans types\n"+"\n".join(f"* {n} — {p['usage']}\n  "+"\n  ".join(p["plan"])for n,p in g["plans_types"].items())
+  +f"\n\n## Bibliothèque d'UO : {len(lib)} fiches issues de réponses précédentes"+(f" ({', '.join(sorted({x['source'] for x in lib}))})"if lib else"")+" — search_uo(recherche) puis get_uo(id) pour les reprendre et les adapter."
+  +'\n\nAppel : create_word_document(titre, blocs=[{"type":"titre","niveau":1,"texte":"…"},{"type":"paragraphe","texte":"…"},…], sous_titre, cadre="niji" | {…}, ambiance, historique=[{version,date,modifications}], interlocuteurs=[{nom,fonction,email,telephone}]).')
+@mcp.tool()
+def create_word_document(ctx:Context,titre:str,blocs:list[dict],sous_titre:str="",cadre:str|dict="niji",ambiance:str="",historique:list[dict]|None=None,interlocuteurs:list[dict]|None=None,options:dict|None=None,filename:str="")->str:
+ """Crée un document Word au format du modèle d'entreprise (page de garde, historique, interlocuteurs, sommaire, corps, annexes Niji) ou d'un cadre imposé par le client. Appeler d'abord get_word_catalog.
+ `blocs` : [{"type":"titre"|"paragraphe"|"liste"|"tableau"|"encadre"|"fiche_uo"|…, …}] ; `cadre` : "niji", un cadre nommé, ou {"police_texte":"Arial","taille":11,"marges_cm":2,"interligne":1.15,"pages_max":30,…} ; `options` : surcharge ponctuelle (page_de_garde, sommaire, historique, interlocuteurs, presentation_niji, cgv). Le nombre de pages est contrôlé si pages_max est fixé."""
+ _chk(titre,blocs,interlocuteurs);return _word_out(titre,blocs,sous_titre,cadre,ambiance,historique,interlocuteurs,options,filename,_uid(ctx))
+@mcp.tool()
+def search_uo(recherche:str="")->str:
+ """Cherche dans la bibliothèque d'unités d'œuvre (fiches UO de réponses précédentes) : mots-clés sur le code, le titre et le contenu. Vide = tout lister."""
+ lib=_uolib();q=[w for w in re.findall(r"\w+",recherche.lower())if len(w)>2]
+ sc=lambda x:sum(3*(w in(x["code"]+" "+x["titre"]).lower())+(w in json.dumps(x["rubriques"],ensure_ascii=False).lower())for w in q)
+ r=sorted(lib,key=sc,reverse=True)if q else lib;r=[x for x in r if not q or sc(x)>0][:20]
+ if not lib:return"Bibliothèque d'UO vide : la constituer avec « python server.py bundle-uo <dossier de réponses> »."
+ return(f"{len(r)} UO trouvée(s) :\n"+"\n".join(f"- {x['id']} — {x['code']} : {x['titre']} ({x['source']}) [rubriques : {', '.join(y['titre'] for y in x['rubriques'])}]"for x in r)
+  +"\n\nget_uo(id) donne le contenu complet et un bloc fiche_uo prêt à adapter (retirer les références propres à l'ancien client)."if r else"Aucune UO ne correspond.")
+@mcp.tool()
+def get_uo(id:str)->str:
+ """Contenu complet d'une UO de la bibliothèque et bloc « fiche_uo » prêt à adapter au nouveau contexte."""
+ x=next((u for u in _uolib()if u["id"]==id),None)
+ if not x:return f"UO « {id} » inconnue (voir search_uo)."
+ return(f"Source : {x['source']} — ⚠ adapter le contenu au nouveau client (noms, outils, volumes, charges).\n\n"
+  +json.dumps({"type":"fiche_uo","code":x["code"],"titre":x["titre"],"rubriques":x["rubriques"]},ensure_ascii=False,indent=1))
+@mcp.tool()
+def save_word_cadre(ctx:Context,nom:str,parametres:dict)->str:
+ """Enregistre un cadre de document pour l'utilisateur (ex. exigences d'un client : police, taille, marges, interligne, pages_max), réutilisable par son nom dans create_word_document."""
+ g=wcatalog()["cfg"];nom=nom.strip().lower()
+ if not re.fullmatch(r"[a-z0-9_]{3,40}",nom)or nom in g["cadres"]:return f"Nom « {nom} » invalide ou réservé (a-z, 0-9, _ ; cadres réservés : {', '.join(g['cadres'])})."
+ ok=set(" ".join(g["parametres_cadre"]).replace(",","").split())|{"description","base","gras_police"};bad=[k for k in parametres if k not in ok]
+ if bad:return f"Paramètres inconnus : {', '.join(bad)} (voir get_word_catalog)."
+ uid=_uid(ctx);f=CAT/"users"/uid/"cadres.json";f.parent.mkdir(parents=True,exist_ok=True);U=_ucadres(uid);U[nom]={"strict":True,**parametres}
+ f.write_text(json.dumps(U,ensure_ascii=False,indent=1),"utf8");return f"Cadre « {nom} » enregistré : {json.dumps(U[nom],ensure_ascii=False)}"
 @mcp.tool()
 def create_excel(title:str,sheets:list[dict],filename:str="",template_prefix:str="")->str:
  """Crée un classeur Excel (.xlsx) avec le dernier modèle. `sheets`: [{"name":"Ventes","rows":[["Col1","Col2"],[1,2]]}], 1re ligne = en-têtes (mise en tableau Excel)."""
@@ -558,8 +642,10 @@ def get_presentation_catalog(ctx:Context,template_prefix:str="")->str:
   +"\n".join(f"\n## {g['name']}"+(f" — {g['help']}"if g.get("help")else"")+"\n"+"\n".join(model(n,c["models"][n])for n in g["models"]if n in c["models"])for g in G)
   +'\n\nAppel : create_powerpoint(title, slides=[{"model":"…","fields":{"champ":"texte" | ["ligne",…] | [["cellule",…],…]},"variante":n (facultatif),"notes":"…"}], ambiance="…"). Champ omis = zone retirée.')
 @mcp.tool()
-def refresh_template(template_prefix:str="")->str:
- """À n'appeler que sur demande explicite (nouveau modèle publié) : épingle le modèle PowerPoint le plus récent, refait l'analyse (polices, zones) et vérifie la configuration des diapos."""
+def refresh_template(template_prefix:str="",type:str="pptx")->str:
+ """À n'appeler que sur demande explicite (nouveau modèle publié) : épingle le modèle le plus récent (type "pptx" ou "docx"), refait l'analyse et vérifie la configuration."""
+ if type=="docx":
+  c=wcatalog(refresh=True);return f"Modèle Word épinglé : {c['template']}."+("\n⚠ "+"\n⚠ ".join(c["warnings"])if c["warnings"]else" Repères du modèle trouvés.")
  c=catalog(template_prefix,refresh=True);inv=c["inventory"]
  return(f"Modèle épinglé : {c['template']} ; polices {c['fonts']} ; {len(inv['slides'])} diapos types, {len(inv['layouts'])} dispositions dont {sum(map(len,inv['families'].values()))} en {len(inv['families'])} familles de variantes ; {len(c['models'])} modèles de diapos exposés."
   +("\n⚠ "+"\n⚠ ".join(c["warnings"])if c["warnings"]else" Configuration cohérente."))
@@ -664,9 +750,14 @@ def app():
  return auth
 if __name__=="__main__":
  import sys
- if sys.argv[1:2]==["bundle"]:  # prépare catalog/bundle (modèle + analyse) à embarquer dans l'image, depuis TEMPLATE_DIR ou SharePoint
-  CAT=BUNDLE;print(refresh_template(sys.argv[2]if len(sys.argv)>2 else""));sys.exit()
+ if sys.argv[1:2]==["bundle"]:  # prépare catalog/bundle (modèles PowerPoint et Word + analyse) à embarquer dans l'image, depuis TEMPLATE_DIR ou SharePoint
+  CAT=BUNDLE;print(refresh_template(sys.argv[2]if len(sys.argv)>2 else""));print(refresh_template(type="docx"));sys.exit()
+ if sys.argv[1:2]==["bundle-uo"]:  # bibliothèque d'UO extraite des réponses passées (.docx d'un dossier) -> catalog/bundle/uo_library.json
+  L=W.extract_uo(sorted(Path(sys.argv[2]).glob("*.docx")));BUNDLE.mkdir(parents=True,exist_ok=True);(BUNDLE/"uo_library.json").write_text(json.dumps(L,ensure_ascii=False,indent=1),"utf8")
+  print(f"{len(L)} UO extraites :");[print(f"  {x['code']} : {x['titre']} ({x['source']}, {len(x['rubriques'])} rubriques)")for x in L];sys.exit()
  if not API_KEY:print("⚠ MCP_API_KEY non défini : endpoint /mcp non protégé")
  try:c=catalog();print(f"PowerPoint : modèle « {c['template']} » (analysé le {c['analyzed']}), {len(c['models'])} diapos"+(f", {len(c['warnings'])} avertissement(s)"if c["warnings"]else""))
  except Exception as e:print(f"⚠ PowerPoint : aucun modèle disponible ({e}) ; fournir catalog/bundle, TEMPLATE_DIR ou SharePoint")
+ try:c=wcatalog();print(f"Word : modèle « {c['template']} », {len(c['cfg']['blocs'])} blocs, {len(c['cfg']['cadres'])} cadres, {len(_uolib())} UO en bibliothèque"+(f" ; ⚠ {c['warnings'][0]}"if c["warnings"]else""))
+ except Exception as e:print(f"⚠ Word : aucun modèle disponible ({e})")
  uvicorn.run(app(),host=E("HOST","0.0.0.0"),port=int(E("PORT","8000")),proxy_headers=True)

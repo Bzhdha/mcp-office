@@ -3,7 +3,7 @@ RUN useradd -r -u 10001 app && mkdir -p /out /data/catalog && chown app /out /da
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY server.py .
+COPY server.py word.py ./
 COPY catalog/ catalog/
 USER app
 ENV OUTPUT_DIR=/out CATALOG_DIR=/data/catalog PORT=8000 PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1

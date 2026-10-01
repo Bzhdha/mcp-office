@@ -1,0 +1,95 @@
+{
+ "about": "Catalogue Word : blocs exposés au chat, cadres (charte Niji ou contraintes client), plans types, rubriques d'UO. Le modèle de référence est le dernier fichier « C2-Niji-Word* » de la source, épinglé comme pour PowerPoint.",
+ "prefixe_modele": "C2-Niji-Word",
+ "reperes": {
+  "titre_couverture": "TITRE DU DOCUMENT",
+  "sous_titre_couverture": "SOUS-TITRE DU DOCUMENT",
+  "zone_projet": "Nom Projet",
+  "zone_document": "Nom Document",
+  "historique": "Historique des versions",
+  "interlocuteurs": "Vos interlocuteurs",
+  "presentation": "Présentation de Niji",
+  "cgv": "CONDITIONS GENERALES DE SERVICES",
+  "styles_titre1": ["Titre1", "Heading1"]
+ },
+ "tailles_modele": {"corps": 11, "titres": {"Heading 1": 4.5, "Heading 2": 2.5, "Heading 3": 1.5, "Heading 4": 0.5, "Title": 7, "Subtitle": 3}},
+ "styles_tableau": {"standard": "Grid Table 4 Accent 4", "leger": "List Table 3 Accent 4"},
+ "ambiance_defaut": "violet",
+ "ambiances": {
+  "violet": {"fort": "8147F5", "clair": "EFE9FE", "texte": "FFFFFF", "label": "violet Niji (titres du modèle)"},
+  "magenta": {"fort": "BB47F5", "clair": "F6E8FE", "texte": "FFFFFF", "label": "magenta"},
+  "rose": {"fort": "FB5FB3", "clair": "FEE6F3", "texte": "FFFFFF", "label": "rose"},
+  "orange": {"fort": "FFA200", "clair": "FFF1D6", "texte": "1D1A24", "label": "orange"},
+  "turquoise": {"fort": "0CE89B", "clair": "DDFBF0", "texte": "1D1A24", "label": "turquoise"},
+  "bleu": {"fort": "0066FF", "clair": "E0ECFF", "texte": "FFFFFF", "label": "bleu Niji"},
+  "sobre": {"fort": "404040", "clair": "EDEDED", "texte": "FFFFFF", "label": "gris (cadres client sobres)"}
+ },
+ "echelle_risques": {
+  "libelles": ["Faible", "Modérée", "Forte", "Très forte"],
+  "criticite": [{"max": 3, "couleur": "C9F7E6"}, {"max": 6, "couleur": "FFF6B3"}, {"max": 9, "couleur": "FFD699"}, {"max": 16, "couleur": "FBC4C4"}]
+ },
+ "cadres": {
+  "niji": {"description": "Charte Niji : modèle d'entreprise, N27 Light 10,5 pt (mots clés en N27 Medium), titres violets, marges du modèle.",
+   "police_texte": "N27 Light", "police_titres": null, "gras_police": "N27 Medium", "taille": 10.5, "interligne": null, "marges_cm": null, "format": "A4", "couleurs": "niji", "couleur_titres": null, "strict": false, "pages_max": null,
+   "page_de_garde": true, "historique": true, "interlocuteurs": true, "sommaire": true, "presentation_niji": false, "cgv": false},
+  "client_arial_11": {"description": "Exemple de cadre imposé : Arial 11 pt partout, interligne 1,15, marges 2,5 cm, couleurs sobres, 30 pages maximum.",
+   "police_texte": "Arial", "police_titres": "Arial", "gras_police": null, "taille": 11, "interligne": 1.15, "marges_cm": 2.5, "format": "A4", "couleurs": "sobre", "couleur_titres": "000000", "strict": true, "pages_max": 30,
+   "page_de_garde": true, "historique": true, "interlocuteurs": true, "sommaire": true, "presentation_niji": false, "cgv": false},
+  "client_compact_10": {"description": "Exemple de cadre compact : Calibri 10 pt, interligne simple, marges 2 cm, charte Niji conservée pour les couleurs, 20 pages maximum.",
+   "police_texte": "Calibri", "police_titres": "Calibri", "gras_police": null, "taille": 10, "interligne": 1.0, "marges_cm": 2, "format": "A4", "couleurs": "niji", "couleur_titres": null, "strict": true, "pages_max": 20,
+   "page_de_garde": true, "historique": false, "interlocuteurs": true, "sommaire": true, "presentation_niji": false, "cgv": false}
+ },
+ "parametres_cadre": {
+  "police_texte": "police du texte (et de tout le document si strict)",
+  "police_titres": "police des titres (défaut : celle du modèle, ou police_texte en cadre strict)",
+  "taille": "taille du corps en points ; titres proportionnés",
+  "interligne": "1.0, 1.15, 1.5…",
+  "marges_cm": "nombre ou {haut, bas, gauche, droite}",
+  "format": "A4, A3 ou Letter",
+  "pages_max": "nombre de pages à ne pas dépasser (contrôlé à la génération)",
+  "couleurs": "niji (ambiances de la charte) ou sobre (gris)",
+  "couleur_titres": "couleur hexadécimale des titres, ex. 000000",
+  "justifie": "true / false",
+  "strict": "true : toute police explicite du document (page de garde comprise) suit police_texte",
+  "page_de_garde, historique, interlocuteurs, sommaire": "éléments de début de document (true / false)",
+  "presentation_niji, cgv": "annexes Niji (présentation officielle, conditions générales de services)"
+ },
+ "rubriques_uo": ["Objectif", "Prérequis", "Méthode", "Livrables", "Facteurs clés de succès", "Principaux risques", "Profils et hypothèses de charge"],
+ "regles": [
+  "Structurer avec des titres (niveau 1 à 4) ; la numérotation et le sommaire sont automatiques.",
+  "Un paragraphe = une idée ; listes à puces pour les énumérations (« - », 2 espaces par niveau).",
+  "**mot** met en valeur un mot-clé (N27 Medium dans la charte Niji, gras dans un cadre client).",
+  "Respecter le cadre demandé par le client (police, taille, marges, nombre de pages) : le passer dans « cadre » ; un dépassement de pages est signalé.",
+  "Pour une réponse à appel d'offres : partir d'un plan type, présenter chaque unité d'œuvre avec un bloc « fiche_uo » (rechercher d'abord une UO existante avec search_uo).",
+  "Ne pas inventer de chiffres, de noms, de références ou de prix : laisser un libellé explicite à compléter (ex. « [à compléter] »)."
+ ],
+ "blocs": {
+  "titre": {"usage": "Titre numéroté automatiquement.", "parametres": {"niveau": "1 à 4", "texte": "texte"}},
+  "paragraphe": {"usage": "Paragraphe de texte ; style « mise_en_avant » (citation colorée) ou « legende ».", "parametres": {"texte": "texte, **gras**, *italique*", "style": "facultatif : mise_en_avant | legende"}},
+  "liste": {"usage": "Liste à puces à la charte (puce colorée).", "parametres": {"elements": "lignes ; 2 espaces en tête = sous-niveau"}},
+  "liste_numerotee": {"usage": "Liste numérotée (1., a., i.).", "parametres": {"elements": "lignes ; 2 espaces en tête = sous-niveau"}},
+  "tableau": {"usage": "Tableau à en-tête coloré (style du modèle), en-tête répété sur chaque page.", "parametres": {"entetes": "liste", "lignes": "liste de listes", "style": "standard | leger", "largeurs": "facultatif : % par colonne", "legende": "facultatif"}},
+  "encadre": {"usage": "Encadré coloré pour un point clé, une synthèse ou un engagement.", "parametres": {"titre": "facultatif", "contenu": "lignes (« - » pour des puces)"}},
+  "citation": {"usage": "Message fort ou citation.", "parametres": {"texte": "texte", "auteur": "facultatif"}},
+  "chiffres_cles": {"usage": "2 à 4 chiffres clés côte à côte.", "parametres": {"chiffres": "[{valeur, libelle}]"}},
+  "tableau_risques": {"usage": "Analyse de risques : probabilité et gravité de 1 à 4, criticité calculée et colorée.", "parametres": {"risques": "[{risque, uo (facultatif), probabilite, gravite, parade (texte ou lignes)}]", "legende": "facultatif"}},
+  "fiche_uo": {"usage": "Fiche d'unité d'œuvre (réponse à appel d'offres) : titre coloré puis rubriques. Partir d'une UO existante (search_uo / get_uo) et l'adapter.", "parametres": {"code": "ex. UO-01", "titre": "intitulé", "rubriques": "[{titre, contenu: lignes, tableau: facultatif [[…]] (ex. charge par profil)}] ; rubriques usuelles : voir rubriques_uo"}},
+  "fiche_profil": {"usage": "CV synthétique d'un profil proposé.", "parametres": {"nom": "ex. [Prénom N.] ou intitulé du profil", "role": "fonction", "experience": "ex. 12 ans d'expérience", "resume": "texte", "competences": "liste", "experiences": "[{periode, client, mission}] ou lignes", "formations": "liste", "certifications": "liste"}},
+  "saut_de_page": {"usage": "Nouvelle page.", "parametres": {}},
+  "presentation_niji": {"usage": "Présentation officielle de Niji (texte et visuels du modèle, contenu figé).", "parametres": {}}
+ },
+ "plans_types": {
+  "memoire_technique": {"usage": "Mémoire technique de réponse à appel d'offres.",
+   "plan": ["1 Compréhension du contexte et des enjeux", "  1.1 Contexte de la consultation", "  1.2 Enjeux et objectifs", "  1.3 Risques identifiés et plan d'action (tableau_risques)", "  1.4 Facteurs clés de succès", "  1.5 Nos engagements",
+    "2 Organisation et méthodologie", "  2.1 Organisation et gouvernance", "  2.2 Pilotage des prestations et indicateurs", "  2.3 Démarche qualité", "  2.4 Description des unités d'œuvre (une fiche_uo par UO)", "  2.5 Outillage", "  2.6 Plan d'assurance sécurité",
+    "3 Moyens humains et compétences", "  3.1 Profils proposés (fiche_profil)", "  3.2 Gestion des compétences et formation", "  3.3 Continuité de service",
+    "4 Amélioration continue et innovation", "  4.1 Capitalisation", "  4.2 Industrialisation", "  4.3 Innovation (IA, outillage)",
+    "5 Réversibilité et transfert de compétences"]},
+  "reponse_organisation_rh": {"usage": "Réponse centrée sur l'organisation interne et la relation client.",
+   "plan": ["1 Organisation interne du soumissionnaire", "  1.1 Recherche des profils", "  1.2 Recrutement", "  1.3 Suivi des intervenants : intégration, compétences, fidélisation",
+    "2 Relation avec le client", "  2.1 Échanges et suivi de contrat", "  2.2 Pilotage du marché et des prestations", "  2.3 Escalade", "  2.4 Suivi des intervenants en mission : initialisation, accompagnement, départs anticipés"]},
+  "plan_assurance_securite": {"usage": "Plan d'assurance sécurité.",
+   "plan": ["1 Introduction et objectifs", "2 Responsabilités et application du PAS", "3 Contexte, biens sensibles et documents de sécurité", "4 Organisation et contacts sécurité", "5 Instances et indicateurs SSI",
+    "6 Mesures de sécurité : organisation, actifs et risques, gestion de crise, ressources humaines, sécurité physique, exploitation, accès et habilitations, développement, support et maintenance, incidents, tiers, contrôle et conformité", "7 Réversibilité"]}
+ }
+}

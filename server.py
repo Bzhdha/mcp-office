@@ -1,6 +1,6 @@
 """MCP Office: convertit les réponses IA en DOCX/XLSX/PPTX à partir du dernier modèle d'entreprise (SharePoint)."""
 from copy import deepcopy
-import io,os,re,time,secrets,zipfile,hmac,httpx,uvicorn
+import io,os,re,json,time,secrets,zipfile,hmac,httpx,uvicorn
 from pathlib import Path
 from urllib.parse import quote
 from docx import Document
@@ -12,6 +12,7 @@ from openpyxl.utils import get_column_letter
 from pptx import Presentation
 from pptx.util import Emu
 from pptx.oxml.ns import qn as pq
+from pptx.opc.constants import RELATIONSHIP_TYPE as RT
 from mcp.server.fastmcp import FastMCP
 from starlette.responses import Response,JSONResponse
 
@@ -20,6 +21,7 @@ TENANT,CID,CSEC,SITE,FOLDER=E("SP_TENANT_ID"),E("SP_CLIENT_ID"),E("SP_CLIENT_SEC
 LOCAL=E("TEMPLATE_DIR");API_KEY=E("MCP_API_KEY","");BASE=E("PUBLIC_BASE_URL","http://localhost:8000").rstrip("/")
 OUT=Path(E("OUTPUT_DIR","/tmp/mcp-office"));OUT.mkdir(parents=True,exist_ok=True);TTL=int(E("FILE_TTL","3600"));MAXIN=int(E("MAX_INPUT","500000"))
 LANG=E("DOC_LANG","fr-FR");CACHE=int(E("TEMPLATE_CACHE","300"))
+CAT=Path(E("CATALOG_DIR","/data/catalog"));MODELS=Path(E("MODELS_DIR",str(Path(__file__).with_name("catalog"))))
 EXT={"docx":(".dotx",".docx"),"xlsx":(".xltx",".xlsx"),"pptx":(".potx",".pptx")}
 MIME={"docx":"application/vnd.openxmlformats-officedocument.wordprocessingml.document","xlsx":"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet","pptx":"application/vnd.openxmlformats-officedocument.presentationml.presentation"}
 G="https://graph.microsoft.com/v1.0";_tok=[None,0];_tpl={}
@@ -145,16 +147,6 @@ RNS="http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 def _stitle(s):
  t=s.shapes.title
  return(t.text_frame.text.strip()if t is not None and t.has_text_frame else"")or s.slide_layout.name
-def slide_types(p):
- """Diapos types du modèle : n°, libellé, zones remplissables (nom de forme PowerPoint)."""
- r=[]
- for i,s in enumerate(p.slides,1):
-  z=[]
-  for sh in s.shapes:
-   k="table"if sh.has_table else"title"if sh.is_placeholder and int(sh.placeholder_format.type)in(1,3)else"text"if sh.has_text_frame else None
-   if k:z.append({"zone":sh.name,"kind":k,"sample":(sh.text_frame.text[:60]if sh.has_text_frame else f"{len(sh.table.rows)}x{len(sh.table.columns)}")})
-  r.append({"type":i,"label":_stitle(s),"zones":z})
- return r
 def _pick(p,t,has_table=False):
  S=list(p.slides)
  if isinstance(t,int)or str(t).isdigit():return S[int(t)-1]
@@ -170,9 +162,9 @@ def _dup(p,src):
  s=p.slides.add_slide(src.slide_layout);tree=s.shapes._spTree
  for sh in list(s.shapes):tree.remove(sh._element)
  m={}
- for rid,rel in src.part.rels.items():
+ for rel in list(src.part.rels._rels.values()):
   if rel.reltype.endswith(("/slideLayout","/notesSlide")):continue
-  m[rid]=s.part.rels.get_or_add_ext_rel(rel.reltype,rel.target_ref)if rel.is_external else s.part.relate_to(rel.target_part,rel.reltype)
+  m[rel.rId]=s.part.rels.get_or_add_ext_rel(rel.reltype,rel.target_ref)if rel.is_external else s.part.relate_to(rel.target_part,rel.reltype)
  bg=src._element.cSld.bg
  if bg is not None:s._element.cSld.insert(0,deepcopy(bg))
  for el in list(src.shapes._spTree)[2:]:
@@ -183,45 +175,201 @@ def _dup(p,src):
     if v in m:x.set(f"{{{RNS}}}{a}",m[v])
   tree.append(e)
  return s
-def _fill(tf,lines):
- """Remplace le texte en gardant la mise en forme de la 1re ligne (et le niveau)."""
- ps=tf._txBody.findall(pq("a:p"));p0=ps[0]
- r0=p0.find(pq("a:r"));rpr=deepcopy(r0.find(pq("a:rPr")))if r0 is not None and r0.find(pq("a:rPr"))is not None else None
+def _fonts(p):
+ """Polices du thème (titres, texte), ex. ("N27 Medium","N27 Light")."""
+ b=p.slide_masters[0].part.part_related_by(RT.THEME).blob.decode("utf8","ignore")
+ f=[re.search(rf"<a:{k}Font>\s*<a:latin typeface=\"([^\"]*)\"",b)for k in("major","minor")]
+ return tuple(m[1]if m else""for m in f)
+def _bu(p,t):pr=p.find(pq("a:pPr"));return pr is not None and any(pr.find(pq(x))is not None for x in t)
+def _bul(p,explicit=True):
+ """Paragraphe à puce : puce explicite, ou (si l'exemple n'en a aucune d'explicite) puce héritée non annulée par buNone."""
+ return _bu(p,("a:buChar","a:buAutoNum","a:buBlip"))if explicit else not _bu(p,("a:buNone",))
+def _fill(tf,lines,fonts=("","")):
+ """Remplace le texte : la ligne n reprend la mise en forme du paragraphe n de l'exemple (le dernier au-delà).
+ Si des lignes commencent par « - », structure respectée : lignes « - » -> paragraphes à puce de l'exemple, autres -> paragraphes sans puce, "" -> paragraphe vide.
+ Gras = police titres du thème si distincte (charte : mots importants en N27 Medium) ; polices hors thème retirées ; \\v = saut de ligne."""
+ lines=lines or[""];ps=tf._txBody.findall(pq("a:p"));full=[x for x in ps if"".join(x.itertext()).strip()]or ps[:1]
+ fam=(fonts[1]or fonts[0]).split(" ")[0];cls=any(re.match(r"\s*[-*•]\s",l)for l in lines);seen={}
  for x in ps:tf._txBody.remove(x)
- for ln in lines or[""]:
-  p=deepcopy(p0)
+ for n,ln in enumerate(lines):
+  if not cls:p0=full[min(n,len(full)-1)]
+  else:
+   ex=any(_bul(x)for x in full)
+   k="e"if not ln.strip()else"b"if re.match(r"\s*[-*•]\s",ln)else"t";c=[x for x in(ps if k=="e"else full)if(k=="e")==(not"".join(x.itertext()).strip())and(k=="e"or _bul(x,ex)==(k=="b"))]or full
+   p0=c[min(seen.get(k,0),len(c)-1)];seen[k]=seen.get(k,0)+1
+  p=deepcopy(p0);rs=[r.find(pq("a:rPr"))for r in p0.findall(pq("a:r"))];rs=[r for r in rs if r is not None]
+  rpr=next((r for r in rs if not any(f.get("typeface")==fonts[0]for f in r.findall(pq("a:latin")))),rs[0]if rs else None)  # éviter de reprendre la police d'accent
   for c in list(p):
    if c.tag!=pq("a:pPr"):p.remove(c)
-  tf._txBody.append(p);pa=tf.paragraphs[-1];lvl=(len(ln)-len(ln.lstrip()))//2
+  tf._txBody.append(p);pa=tf.paragraphs[-1];lvl=(len(ln)-len(ln.lstrip(" ")))//2
   if lvl:pa.level=min(lvl,8)
-  for x,b_,i_,_ in runs(re.sub(r"^[-*•]\s+","",ln.strip())):
-   r=pa.add_run()
-   if rpr is not None:r._r.insert(0,deepcopy(rpr))
-   r.text=x;b_ and setattr(r.font,"bold",True);i_ and setattr(r.font,"italic",True)
-def _table(t,rows):
- tr=t._tbl.tr_lst;nc=len(t.columns)
+  for k,seg in enumerate(re.sub(r"^[-*•]\s+","",ln.strip()).split("\v")):
+   k and pa.add_line_break()
+   for x,b_,i_,_ in runs(seg):
+    r=pa.add_run()
+    if rpr is not None:
+     q=deepcopy(rpr);r._r.insert(0,q)
+     for f in q.findall(pq("a:latin")):
+      if fam and not f.get("typeface","+").startswith(("+",fam)):q.remove(f)
+    r.text=x;i_ and setattr(r.font,"italic",True)
+    if b_:
+     if fonts[0]and fonts[0]!=fonts[1]:r.font.name=fonts[0]
+     else:r.font.bold=True
+def _table(t,rows,fonts=("","")):
+ nc=len(t.columns)
  while len(t._tbl.tr_lst)<len(rows):t._tbl.append(deepcopy(t._tbl.tr_lst[-1]))
  for x in t._tbl.tr_lst[len(rows):]:t._tbl.remove(x)
  for ri,r in enumerate(rows):
-  for ci in range(nc):_fill(t.cell(ri,ci).text_frame,[str(r[ci])if ci<len(r)else""])
-def make_pptx(title,slides,subtitle="",template_prefix=""):
- tn,b=latest("pptx",template_prefix);p=Presentation(_untemplate(b));orig=list(p.slides)
+  for ci in range(nc):_fill(t.cell(ri,ci).text_frame,[str(r[ci])if ci<len(r)else""],fonts)
+def _layout(p,name):
+ L=[l for m in p.slide_masters for l in m.slide_layouts]
+ for ok in(lambda l:l.name.lower()==str(name).lower(),lambda l:str(name).lower()in l.name.lower()):
+  for l in L:
+   if ok(l):return l
+ raise ValueError(f"Disposition « {name} » introuvable (voir list_slide_types(layouts=True))")
+def _zone(s,key):
+ """Zone par nom (toutes les formes de ce nom), « Nom#n » (n-ième forme de ce nom) ou « @idx » (espace réservé d'index idx)."""
+ if m:=re.fullmatch(r"@(\d+)",key):return[sh for sh in s.shapes if sh.is_placeholder and sh.placeholder_format.idx==int(m[1])]
+ n,_,i=key.rpartition("#")
+ if n and i.isdigit():return[sh for sh in s.shapes if sh.name==n][int(i)-1:int(i)]
+ return[sh for sh in s.shapes if sh.name==key]
+# ---------- Catalogue PowerPoint : modèle épinglé + analyse enregistrée + diapos autorisées ----------
+# État (CATALOG_DIR, volume) : copie du modèle épinglé et analyse (polices, inventaire des zones). Refaite seulement via refresh_template.
+# Configuration (MODELS_DIR, versionnée) : modèles de diapos exposés au chat (champs nommés, limites, textes fixes, règles).
+def _cfile(d,prefix,ext=".json"):return Path(d)/("pptx"+("-"+re.sub(r"\W","_",prefix)if prefix else"")+ext)
+_cats={}
+def _inventory(p):
+ inv={"slides":[],"layouts":[]}
+ for i,s in enumerate(p.slides,1):
+  seen={};names=[sh.name for sh in s.shapes];z=[]
+  for sh in s.shapes:
+   seen[sh.name]=seen.get(sh.name,0)+1;k=sh.name if names.count(sh.name)==1 else f"{sh.name}#{seen[sh.name]}"
+   kind="table"if sh.has_table else"title"if sh.is_placeholder and int(sh.placeholder_format.type)in(1,3)else"text"if sh.has_text_frame else None
+   if kind:z.append({"zone":k,"kind":kind,"exemple":sh.text_frame.text[:80]if sh.has_text_frame else f"{len(sh.table.rows)}x{len(sh.table.columns)}"})
+  inv["slides"].append({"type":i,"label":_stitle(s),"layout":s.slide_layout.name,"zones":z})
+ sigs={}
+ for mi,m in enumerate(p.slide_masters):
+  for l in m.slide_layouts:
+   if any(x["layout"]==l.name for x in inv["layouts"]):continue
+   ph=[h for h in l.placeholders if int(h.placeholder_format.type)not in(13,15,16)]
+   inv["layouts"].append({"layout":l.name,"master":mi+1,"zones":[{"zone":f"@{h.placeholder_format.idx}","kind":"title"if int(h.placeholder_format.type)in(1,3)else"image"if int(h.placeholder_format.type)==18 else"text","exemple":h.text_frame.text[:40]}for h in ph]})
+   if ph:sigs.setdefault(tuple(sorted((h.placeholder_format.idx,int(h.placeholder_format.type),round(h.left/36e4),round(h.top/36e4))for h in ph)),[]).append(l.name)
+ inv["families"]={}  # variantes = dispositions de même structure (mêmes zones, mêmes positions), visuel différent
+ for v in sigs.values():
+  if len(v)<2:continue
+  n=os.path.commonprefix(v).rstrip(" -_");n=n if len(n)>3 else v[0]
+  while n in inv["families"]:n+="+"
+  inv["families"][n]=v
+ return inv
+def _auto_models(inv):
+ """Sans configuration : une entrée par diapo type, champs = zones brutes."""
+ return{f"diapo_{s['type']}":{"usage":s["label"],"source":{"type":s["type"]},"fields":{re.sub(r"\W+","_",z["zone"]).strip("_").lower():{"zone":z["zone"],"kind":"table"if z["kind"]=="table"else"text","exemple":z["exemple"]}for z in s["zones"]}}for s in inv["slides"]}
+def _variants(m,inv):
+ """Variantes d'un modèle de diapo : [{"type":n} | {"layout":nom}, + label/ambiance de la config]."""
+ s=m["source"];info=m.get("variants")or{}
+ if"family"in s:v=[{"layout":x}for x in inv["families"].get(s["family"],[])]
+ else:
+  k="type"if"type"in s else"layout";v=[{k:x}for x in(s[k]if isinstance(s[k],list)else[s[k]])]
+ return[{**x,**info.get(str(next(iter(x.values()))),{})}for x in v]
+def _check(c,p):
+ w=[];S=list(p.slides);lay={l["layout"]for l in c["inventory"]["layouts"]}
+ for n,m in c["models"].items():
+  keys=[f["zone"]for f in(m.get("fields")or{}).values()]+list((m.get("fixed")or{}).keys())
+  if not m["_v"]:w.append(f"{n}: aucune variante (famille ou source introuvable)")
+  for v in m["_v"]:
+   try:
+    if"type"in v:s=S[int(v["type"])-1];w+=[f"{n}: zone {k} absente de la diapo {v['type']}"for k in keys if not _zone(s,k)]
+    else:
+     L=_layout(p,v["layout"]);ok={f"@{h.placeholder_format.idx}"for h in L.placeholders}
+     w+=[f"{n}: zone {k} absente de la disposition {v['layout']}"for k in keys if k not in ok]
+   except Exception as e:w.append(f"{n}: source {v} invalide ({e})")
+ used={v.get("layout")for m in c["models"].values()for v in m["_v"]}|{S[int(v["type"])-1].slide_layout.name for m in c["models"].values()for v in m["_v"]if"type"in v and int(v["type"])<=len(S)}
+ libres=sorted(lay-used-set(c.get("ignored")or{}))
+ if libres:w.append("dispositions non exposées au chat (à ajouter dans catalog/pptx.json si utiles) : "+", ".join(libres))
+ return w
+def catalog(prefix="",refresh=False):
+ """Catalogue en cache ; l'analyse du modèle n'est refaite que si refresh=True (ou au premier usage)."""
+ if prefix in _cats and not refresh:return _cats[prefix]
+ sf=_cfile(CAT,prefix);st=json.loads(sf.read_text("utf8"))if sf.is_file()else{}
+ cf=_cfile(MODELS,prefix);cfg=json.loads(cf.read_text("utf8"))if cf.is_file()else{}
+ if refresh or not st.get("template")or not(CAT/st["template"]).is_file():
+  name,b=latest("pptx",prefix);CAT.mkdir(parents=True,exist_ok=True);(CAT/name).write_bytes(b);p=Presentation(_untemplate(b))
+  st={"template":name,"analyzed":time.strftime("%Y-%m-%d %H:%M"),"fonts":dict(zip(("accent","texte"),_fonts(p))),"inventory":_inventory(p)}
+  sf.write_text(json.dumps(st,ensure_ascii=False,indent=1),"utf8")
+ b=(CAT/st["template"]).read_bytes()
+ c={**st,"fonts":cfg.get("fonts")or st["fonts"],"rules":cfg.get("rules",[]),"groups":cfg.get("groups",[]),"ambiances":cfg.get("ambiances",{}),"default_ambiance":cfg.get("default_ambiance",""),"ignored":cfg.get("ignored_layouts",{}),"models":cfg.get("models")or _auto_models(st["inventory"]),"bytes":b}
+ for m in c["models"].values():m["_v"]=_variants(m,st["inventory"])
+ c["warnings"]=_check(c,Presentation(_untemplate(b)));_cats[prefix]=c;return c
+def _pickv(c,n,m,d,used,amb):
+ """Variante : champ pilote (variant_by), « variante » explicite, sinon alternance dans l'ambiance couleur du document."""
+ V=m["_v"];vals=d.get("fields")or{}
+ if m.get("variant_by"):return[V[min(max(int(vals.get(m["variant_by"],1))-1,0),len(V)-1)]]
+ if m.get("sequence"):return V
+ if d.get("variante"):return[V[min(max(int(d["variante"])-1,0),len(V)-1)]]
+ pool=[x for x in V if x.get("ambiance")==amb]or V;k=used.get(n,0);used[n]=k+1
+ return[pool[k%len(pool)]]
+def _expand(c,d,used,warn,amb=""):
+ """Diapo {"model","fields"} -> [{"type"|"layout","zones"}] + contrôle des champs (longueurs, nombre de lignes)."""
+ n=d.get("model");m=c["models"].get(n)
+ if not m:raise ValueError(f"Modèle de diapo inconnu « {n} » (voir get_presentation_catalog)")
+ vs=_pickv(c,n,m,d,used,amb)
+ if m.get("asis"):return[{**{k:v[k]for k in("type","layout")if k in v},"asis":True,"notes":d.get("notes")}for v in vs]
+ src={k:vs[0][k]for k in("type","layout")if k in vs[0]}
+ z=dict(m.get("fixed")or{});vals=d.get("fields")or{};F=m.get("fields")or{};anchors={}
+ warn+=[f"diapo {d['_i']} ({n}) : champ inconnu « {k} » ignoré"for k in vals if k not in F]
+ for k,f in F.items():
+  v=vals.get(k,f.get("default"))
+  if v in(None,"",[]):z.setdefault(f["zone"],None);continue  # champ non fourni -> zone supprimée
+  if f.get("kind")=="table":
+   if len(v)>f.get("max_rows",99)or max(map(len,v))>f.get("max_cols",99):warn.append(f"diapo {d['_i']} ({n}) : « {k} » dépasse {f.get('max_rows')} lignes x {f.get('max_cols')} colonnes")
+  else:
+   L=[str(x)for x in v]if isinstance(v,list)else str(v).split("\n")
+   if f.get("max_lines")and len(L)>f["max_lines"]:warn.append(f"diapo {d['_i']} ({n}) : « {k} » a {len(L)} lignes (max {f['max_lines']})")
+   for x in L:
+    if f.get("max")and len(plain(x))>f["max"]:warn.append(f"diapo {d['_i']} ({n}) : « {k} » trop long ({len(plain(x))} car., max {f['max']}) : {plain(x)[:40]}…")
+   u=f.get("upper");u=len(L)if u is True else int(u or 0);L=[x.upper()if i<u else x for i,x in enumerate(L)]  # majuscules saisies dans le modèle
+   if f.get("breaks"):L=["\v".join(L)]  # lignes = sauts de ligne d'un même paragraphe
+   v=(f.get("prefix")or[])+L
+  z[f["zone"]]=v
+  if f.get("anchor")or f.get("bullets")is False:anchors[f["zone"]]={"anchor":f.get("anchor"),"bullets":f.get("bullets",True)}
+ return[{**src,"zones":z,"anchors":anchors,"notes":d.get("notes")}]
+def make_pptx(title,slides,subtitle="",template_prefix="",warn=None,ambiance=""):
+ c=catalog(template_prefix);tn=c["template"];p=Presentation(_untemplate(c["bytes"]));orig=list(p.slides)
  if not orig:raise ValueError("Le modèle PowerPoint ne contient aucune diapo type")
- p.core_properties.title=title;p.core_properties.language=LANG
- for d in[{"type":1,"title":title,"bullets":[subtitle]if subtitle else[]}]+list(slides):
-  tb=d.get("table");s=_dup(p,_pick(p,d.get("type"),bool(tb)));zones=d.get("zones")or{};body=[d.get("bullets")or[],d.get("bullets2")or[]];bi=0
-  for sh in list(s.shapes):
+ p.core_properties.title=title;p.core_properties.language=LANG;fonts=(c["fonts"].get("accent",""),c["fonts"].get("texte",""));slides=list(slides);warn=[]if warn is None else warn;used={}
+ amb=ambiance or c["default_ambiance"]
+ if amb and c["ambiances"]and amb not in c["ambiances"]:warn.append(f"ambiance « {amb} » inconnue ({', '.join(c['ambiances'])})")
+ if any("model"in d for d in slides):cover=[];slides=[x for i,d in enumerate(slides,1)for x in(_expand(c,{**d,"_i":i},used,warn,amb)if"model"in d else[d])]
+ else:cover=[]if slides and str(slides[0].get("type"))=="1"else[{"type":1,"title":title,"bullets":[subtitle]if subtitle else[]}]
+ for d in cover+slides:
+  tb=d.get("table");body=[d.get("bullets")or[],d.get("bullets2")or[]];bi=0;done=set()
+  s=p.slides.add_slide(_layout(p,d["layout"]))if d.get("layout")else _dup(p,_pick(p,d.get("type"),bool(tb)))
+  for k,v in(d.get("zones")or{}).items():
+   for sh in _zone(s,k):
+    done.add(sh.shape_id)
+    if v is None:sh._element.getparent().remove(sh._element)  # null -> forme supprimée (ex. étiquette « EXEMPLE »)
+    elif sh.has_table and isinstance(v,list):_table(sh.table,v,fonts)
+    elif sh.has_text_frame:
+     _fill(sh.text_frame,v if isinstance(v,list)else str(v).split("\n"),fonts)
+     fm=(d.get("anchors")or{}).get(k)or{}
+     if fm.get("anchor"):sh.text_frame._txBody.bodyPr.set("anchor",fm["anchor"])
+     if fm.get("bullets")is False:  # texte sans puce dans une zone à puces héritées
+      for pa in sh.text_frame.paragraphs:
+       pr=pa._p.get_or_add_pPr();pr.set("marL","0");pr.set("indent","0")
+       for t in("a:buChar","a:buAutoNum","a:buBlip","a:buNone"):
+        for x in pr.findall(pq(t)):pr.remove(x)
+       nx=next((x for x in pr if x.tag in(pq("a:tabLst"),pq("a:defRPr"),pq("a:extLst"))),None);bn=pr.makeelement(pq("a:buNone"),{})
+       nx.addprevious(bn)if nx is not None else pr.append(bn)  # ordre du schéma DrawingML
+  for sh in[]if d.get("asis")else list(s.shapes):  # asis : diapo insérée telle quelle (contenu institutionnel)
+   if sh.shape_id in done:continue
    ph=sh.is_placeholder and int(sh.placeholder_format.type)
-   if sh.name in zones:
-    v=zones[sh.name]
-    if sh.has_table and isinstance(v,list):_table(sh.table,v)
-    elif sh.has_text_frame:_fill(sh.text_frame,v if isinstance(v,list)else str(v).split("\n"))
-   elif sh.has_table and tb:_table(sh.table,tb);tb=None
-   elif ph in(1,3):_fill(sh.text_frame,[d.get("title","")])
+   if sh.has_table and tb:_table(sh.table,tb,fonts);tb=None
+   elif ph in(1,3):_fill(sh.text_frame,[d.get("title","")],fonts)
    elif ph in(2,4,7)and sh.has_text_frame:
-    if bi<2 and body[bi]:_fill(sh.text_frame,body[bi]);bi+=1
+    if bi<2 and body[bi]:_fill(sh.text_frame,body[bi],fonts);bi+=1
     else:sh._element.getparent().remove(sh._element)  # zone vide -> supprimée (pas de texte d'exemple)
-  if tb:W,H=p.slide_width,p.slide_height;_table(s.shapes.add_table(len(tb),max(map(len,tb)),Emu(W//20),Emu(H//4),Emu(W*9//10),Emu(H//2)).table,tb)
+   elif ph==18 and sh._element.tag==pq("p:sp"):sh._element.getparent().remove(sh._element)  # espace image vide
+  if tb:W,H=p.slide_width,p.slide_height;_table(s.shapes.add_table(len(tb),max(map(len,tb)),Emu(W//20),Emu(H//4),Emu(W*9//10),Emu(H//2)).table,tb,fonts)
   if d.get("notes"):s.notes_slide.notes_text_frame.text=d["notes"]
  sl=p.slides._sldIdLst
  for s in orig:
@@ -252,13 +400,51 @@ def create_excel(title:str,sheets:list[dict],filename:str="",template_prefix:str
  """Crée un classeur Excel (.xlsx) avec le dernier modèle. `sheets`: [{"name":"Ventes","rows":[["Col1","Col2"],[1,2]]}], 1re ligne = en-têtes (mise en tableau Excel)."""
  _chk(title,sheets);tn,w=make_xlsx(title,sheets,template_prefix);return _ret("xlsx",filename or title,tn,w)
 @mcp.tool()
-def list_slide_types(template_prefix:str="")->str:
- """Liste les diapos types du dernier modèle PowerPoint (n°, libellé, zones nommées). À appeler avant create_powerpoint."""
- tn,b=latest("pptx",template_prefix);return f"Modèle {tn}\n"+"\n".join(f"{t['type']}. {t['label']} | zones: "+"; ".join(f"{z['zone']} ({z['kind']}: {z['sample']!r})"for z in t["zones"])for t in slide_types(Presentation(_untemplate(b))))
+def get_presentation_catalog(template_prefix:str="")->str:
+ """À appeler avant create_powerpoint : diapos disponibles dans le modèle d'entreprise (usage, champs à remplir, limites) et règles de rédaction."""
+ c=catalog(template_prefix);f=c["fonts"]
+ def fd(k,x):
+  lim=", ".join(filter(None,[x.get("kind","text")if x.get("kind")in("lines","table")else"texte",f"≤{x['max']} car."if x.get("max")else"",f"≤{x['max_lines']} lignes"if x.get("max_lines")else"",f"≤{x.get('max_rows')}x{x.get('max_cols')}"if x.get("kind")=="table"else""]))
+  return f"{k} ({lim})"+(f" : {x['help']}"if x.get("help")else"")+(f" [défaut : {x['default']!r}]"if x.get("default")else"")
+ def var(m):
+  V=m["_v"]
+  if m.get("sequence"):return f" [{len(V)} diapos insérées]"
+  if m.get("variant_by"):return f" [variante choisie par « {m['variant_by']} »]"
+  if len(V)<2:return""
+  a=sorted({x["ambiance"]for x in V if x.get("ambiance")})
+  return f" [{len(V)} variantes"+(f", ambiances {'/'.join(a)}"if a else"")+" ; omis = alternance automatique, « variante »: n pour imposer : "+", ".join(f"{i}={x.get('label',next(iter(x.values())))}"for i,x in enumerate(V,1))+"]"
+ def model(n,m):
+  F=m.get("fields")or{}
+  return f"* {n} — {m.get('usage','')}{var(m)}\n  "+("(contenu fixe, aucun champ)"if m.get("asis")else"champs : "+"; ".join(fd(k,x)for k,x in F.items()))
+ G=c["groups"]or[{"name":"Diapos","models":list(c["models"])}];seen=set(x for g in G for x in g["models"])
+ G=G+([{"name":"Autres","models":[n for n in c["models"]if n not in seen]}]if any(n not in seen for n in c["models"])else[])
+ return(f"Modèle « {c['template']} » (analysé le {c['analyzed']}). Polices appliquées automatiquement : {f.get('texte')} (texte), {f.get('accent')} (accent).\n"
+  +("Règles :\n"+"\n".join(f"- {r}"for r in c["rules"])+"\n"if c["rules"]else"")
+  +("Ambiances couleur (paramètre « ambiance », une par document) : "+"; ".join(f"{k} = {v}"for k,v in c["ambiances"].items())+(f" (défaut : {c['default_ambiance']})"if c["default_ambiance"]else"")+"\n"if c["ambiances"]else"")
+  +"\n".join(f"\n## {g['name']}"+(f" — {g['help']}"if g.get("help")else"")+"\n"+"\n".join(model(n,c["models"][n])for n in g["models"]if n in c["models"])for g in G)
+  +'\n\nAppel : create_powerpoint(title, slides=[{"model":"…","fields":{"champ":"texte" | ["ligne",…] | [["cellule",…],…]},"variante":n (facultatif),"notes":"…"}], ambiance="…"). Champ omis = zone retirée.')
 @mcp.tool()
-def create_powerpoint(title:str,slides:list[dict],subtitle:str="",filename:str="",template_prefix:str="")->str:
- """Crée une présentation (.pptx) en dupliquant les diapos types du dernier modèle (couverture = diapo 1 avec title/subtitle). `slides`: [{"type":3 ou "Sommaire" (n° ou libellé, cf. list_slide_types; omis = auto),"title":"...","bullets":["point","  sous-point"],"bullets2":[2e colonne],"table":[["A","B"],["1","2"]],"zones":{"NomForme":"texte" ou [lignes] ou [[tableau]]},"notes":"..."}]. Les zones de contenu non remplies sont supprimées ; logos, images et décor du modèle sont conservés."""
- _chk(title,slides);tn,p=make_pptx(title,slides,subtitle,template_prefix);return _ret("pptx",filename or title,tn,p)
+def refresh_template(template_prefix:str="")->str:
+ """À n'appeler que sur demande explicite (nouveau modèle publié) : épingle le modèle PowerPoint le plus récent, refait l'analyse (polices, zones) et vérifie la configuration des diapos."""
+ c=catalog(template_prefix,refresh=True);inv=c["inventory"]
+ return(f"Modèle épinglé : {c['template']} ; polices {c['fonts']} ; {len(inv['slides'])} diapos types, {len(inv['layouts'])} dispositions dont {sum(map(len,inv['families'].values()))} en {len(inv['families'])} familles de variantes ; {len(c['models'])} modèles de diapos exposés."
+  +("\n⚠ "+"\n⚠ ".join(c["warnings"])if c["warnings"]else" Configuration cohérente."))
+@mcp.tool()
+def list_slide_types(template_prefix:str="",layouts:bool=False)->str:
+ """(Administration) Inventaire brut du modèle épinglé : diapos types et zones, `layouts=True` pour les dispositions (zones « @idx »). Sert à rédiger catalog/pptx.json."""
+ c=catalog(template_prefix);inv=c["inventory"]
+ r=f"Modèle {c['template']}\n"+"\n".join(f"{t['type']}. {t['label']} | zones: "+"; ".join(f"{z['zone']} ({z['kind']}: {z['exemple'][:40]!r})"for z in t["zones"])for t in inv["slides"])
+ r+="\n\nFamilles de variantes (source « family ») :\n"+"\n".join(f"- {n} : {', '.join(v)}"for n,v in inv["families"].items())
+ if layouts:r+="\n\nDispositions (source « layout », masque n) :\n"+"\n".join(f"- {l['layout']} (masque {l.get('master',1)}) | "+("; ".join(f"{z['zone']} ({z['kind']}: {z['exemple'][:30]!r})"for z in l["zones"])or"mise en page figée")for l in inv["layouts"])
+ return r
+@mcp.tool()
+def create_powerpoint(title:str,slides:list[dict],ambiance:str="",filename:str="",template_prefix:str="")->str:
+ """Crée une présentation (.pptx) strictement conforme au modèle d'entreprise. Appeler d'abord get_presentation_catalog.
+ `slides`: [{"model":"couverture","fields":{"titre":"…"}},…] dans l'ordre voulu ; "variante": n impose une variante visuelle ; **mot** = mise en valeur (police d'accent) ; « \\n » dans un texte = nouveau paragraphe ; "notes" = notes orateur.
+ `ambiance` : couleur dominante du document (cf. catalogue) ; les variantes (couverture, intercalaires…) sont choisies dans cette ambiance et alternées.
+ Les dépassements de limites sont signalés : corriger le contenu et regénérer si besoin."""
+ _chk(title,slides);w=[];tn,p=make_pptx(title,slides,template_prefix=template_prefix,warn=w,ambiance=ambiance)
+ return _ret("pptx",filename or title,tn,p)+("\n\nÀ corriger :\n- "+"\n- ".join(w)if w else"")
 
 @mcp.custom_route("/files/{tok}/{name}",methods=["GET"])
 async def dl(req):

@@ -1,0 +1,42 @@
+services:
+  mcp-office:
+    build: .
+    image: mcp-office:latest
+    container_name: mcp-office
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # 127.0.0.1 par défaut : exposer via le reverse-proxy HTTPS. BIND_ADDR=0.0.0.0 pour ouvrir le port.
+      - "${BIND_ADDR:-127.0.0.1}:${HOST_PORT:-8000}:8000"
+    volumes:
+      - out:/out
+      # Modèle PowerPoint épinglé + analyse (refaite seulement via l'outil refresh_template)
+      - catalog-state:/data/catalog
+      # Modifier la configuration des diapos sans reconstruire l'image (puis redémarrer) :
+      # - ./catalog:/app/catalog:ro
+      # Mode sans SharePoint (TEMPLATE_DIR=/templates dans .env) :
+      # - ./modeles:/templates:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    # Même réseau que LibreChat -> url: http://mcp-office:8000/mcp
+    # networks: [librechat]
+
+volumes:
+  out:
+  catalog-state:
+
+# networks:
+#   librechat:
+#     external: true
+#     name: librechat_default

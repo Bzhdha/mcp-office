@@ -1,7 +1,7 @@
 """MCP Office – documents Word : catalogue de blocs, cadres (charte Niji ou contraintes client) et bibliothèque d'UO.
 Le document part du modèle d'entreprise épinglé : page de garde, historique, interlocuteurs et sommaire sont remplis,
 le corps d'exemple est remplacé par les blocs demandés, la présentation Niji et les CGV sont insérables, la 4e de couverture est conservée."""
-import io,re,json,math,time,shutil,zipfile,subprocess,tempfile
+import io,re,json,math,time,shutil,zipfile,subprocess,tempfile,hashlib
 from copy import deepcopy
 from pathlib import Path
 from docx import Document
@@ -16,30 +16,69 @@ PAGES={"A4":(21.0,29.7),"A3":(29.7,42.0),"Letter":(21.59,27.94)}
 
 # ---------- outils XML ----------
 def _runs(t):return[(x.strip("*`"),x.startswith("**"),x.startswith("*")and not x.startswith("**"))for x in re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)",str(t))if x]
+ORD={"tblPr":["tblStyle","tblpPr","tblOverlap","bidiVisual","tblStyleRowBandSize","tblStyleColBandSize","tblW","jc","tblCellSpacing","tblInd","tblBorders","shd","tblLayout","tblCellMar","tblLook","tblCaption","tblDescription"],
+ "trPr":["cnfStyle","divId","gridBefore","gridAfter","wBefore","wAfter","cantSplit","trHeight","tblHeader","tblCellSpacing","jc","hidden"],
+ "pPr":["pStyle","keepNext","keepLines","pageBreakBefore","framePr","widowControl","numPr","suppressLineNumbers","pBdr","shd","tabs","suppressAutoHyphens","kinsoku","wordWrap","overflowPunct","topLinePunct","autoSpaceDE","autoSpaceDN","bidi","adjustRightInd","snapToGrid","spacing","ind","contextualSpacing","mirrorIndents","suppressOverlap","jc","textDirection","textAlignment","textboxTightWrap","outlineLvl","divId","cnfStyle","rPr","sectPr","pPrChange"]}
+def _put(parent,el):
+ """Insère (ou remplace) un élément à sa place dans l'ordre du schéma WordprocessingML."""
+ o=ORD[parent.tag.split("}")[1]];n=el.tag.split("}")[1]
+ for c in parent.findall(el.tag):parent.remove(c)
+ for c in parent:
+  cn=c.tag.split("}")[1]
+  if cn in o and o.index(cn)>o.index(n):c.addprevious(el);return el
+ parent.append(el);return el
+def _lum(h):
+ f=lambda c:c/12.92 if c<=.03928 else((c+.055)/1.055)**2.4
+ r,g,b=(int(h[i:i+2],16)/255 for i in(0,2,4));return .2126*f(r)+.7152*f(g)+.0722*f(b)
+def _cr(a,b):x,y=sorted((_lum(a),_lum(b)));return(y+.05)/(x+.05)
+def _ink(c,bgs,need=4.5):
+ """Couleur de texte dérivée de la couleur d'ambiance, assombrie jusqu'au contraste WCAG AA (4,5:1) sur tous les fonds donnés."""
+ k=1.0
+ while k>0:
+  h="".join(f"{int(int(c[i:i+2],16)*k):02X}"for i in(0,2,4))
+  if min(_cr(h,b)for b in bgs)>=need:return h
+  k-=.04
+ return"000000"
+def _caption(tbl,titre,desc=None):
+ """Titre et description du tableau (repris dans le PDF balisé)."""
+ tp=tbl._tbl.tblPr
+ for tag,v in(("w:tblCaption",titre),("w:tblDescription",desc or titre)):
+  e=OxmlElement(tag);e.set(qn("w:val"),str(v)[:250]);_put(tp,e)
+def _header_row(tbl):
+ """1re ligne = ligne d'en-têtes (répétée, annoncée comme en-têtes) ; style de tableau avec en-tête actif."""
+ h=OxmlElement("w:tblHeader");h.set(qn("w:val"),"true");_put(tbl.rows[0]._tr.get_or_add_trPr(),h)
+ lk=tbl._tbl.tblPr.find(qn("w:tblLook"))
+ if lk is None:lk=_put(tbl._tbl.tblPr,OxmlElement("w:tblLook"))
+ lk.set(qn("w:firstRow"),"1");lk.set(qn("w:val"),"04A0")
 def _shade(cell,fill):
  tcPr=cell._tc.get_or_add_tcPr()
  for s in tcPr.findall(qn("w:shd")):tcPr.remove(s)
  s=OxmlElement("w:shd");s.set(qn("w:val"),"clear");s.set(qn("w:color"),"auto");s.set(qn("w:fill"),fill);tcPr.append(s)
 def _borders(tbl,color="D9D3E8",sz=4,inside=True):
- tblPr=tbl._tbl.tblPr;b=tblPr.find(qn("w:tblBorders"))
- if b is not None:tblPr.remove(b)
- b=OxmlElement("w:tblBorders")
+ tblPr=tbl._tbl.tblPr;b=OxmlElement("w:tblBorders")
  for e in("top","left","bottom","right")+(("insideH","insideV")if inside else()):
   x=OxmlElement(f"w:{e}");x.set(qn("w:val"),"single");x.set(qn("w:sz"),str(sz));x.set(qn("w:color"),color);b.append(x)
- tblPr.append(b)
+ _put(tblPr,b)
 def _cell_margins(tbl,top=60,left=100):
  tblPr=tbl._tbl.tblPr;m=OxmlElement("w:tblCellMar")
  for e,v in(("top",top),("left",left),("bottom",top),("right",left)):x=OxmlElement(f"w:{e}");x.set(qn("w:w"),str(v));x.set(qn("w:type"),"dxa");m.append(x)
- tblPr.append(m)
-def _repeat_header(row):
- trPr=row._tr.get_or_add_trPr();h=OxmlElement("w:tblHeader");h.set(qn("w:val"),"true");trPr.append(h)
+ _put(tblPr,m)
 def _no_split(row):
- trPr=row._tr.get_or_add_trPr();c=OxmlElement("w:cantSplit");c.set(qn("w:val"),"true");trPr.append(c)
+ c=OxmlElement("w:cantSplit");c.set(qn("w:val"),"true");_put(row._tr.get_or_add_trPr(),c)
+def _box(p,fill,bar,keep=True):
+ """Paragraphe d'encadré (fond + filet gauche) : les paragraphes consécutifs forment un seul cadre, sans tableau de mise en page."""
+ pPr=p._p.get_or_add_pPr()
+ b=OxmlElement("w:pBdr");l=OxmlElement("w:left")
+ for k,v in(("val","single"),("sz","24"),("space","8"),("color",bar)):l.set(qn(f"w:{k}"),v)
+ b.append(l);_put(pPr,b)
+ sh=OxmlElement("w:shd");sh.set(qn("w:val"),"clear");sh.set(qn("w:color"),"auto");sh.set(qn("w:fill"),fill);_put(pPr,sh)
+ ind=OxmlElement("w:ind");ind.set(qn("w:left"),"227");ind.set(qn("w:right"),"113");_put(pPr,ind)
+ if keep:_put(pPr,OxmlElement("w:keepNext"))
 def _width(tbl,widths_cm):
  for row in tbl.rows:
   for c,w in zip(row.cells,widths_cm):c.width=Cm(w)
 def _numpr(p,num,lvl):
- pPr=p._p.get_or_add_pPr();n=OxmlElement("w:numPr");a=OxmlElement("w:ilvl");a.set(qn("w:val"),str(lvl));b=OxmlElement("w:numId");b.set(qn("w:val"),str(num));n.append(a);n.append(b);pPr.insert(1 if pPr.find(qn("w:pStyle"))is not None else 0,n)
+ pPr=p._p.get_or_add_pPr();n=OxmlElement("w:numPr");a=OxmlElement("w:ilvl");a.set(qn("w:val"),str(lvl));b=OxmlElement("w:numId");b.set(qn("w:val"),str(num));n.append(a);n.append(b);_put(pPr,n)
 
 class Builder:
  """Construit un document à partir du modèle : cfg = catalog/docx.json, cadre = paramètres effectifs."""
@@ -47,6 +86,8 @@ class Builder:
   self.doc=Document(io.BytesIO(tpl_bytes));self.cfg=cfg;self.cad=cadre;self.warn=[]
   A=cfg["ambiances"];self.col=A.get(amb)or A[cfg.get("ambiance_defaut","violet")]
   if cadre.get("couleurs")=="sobre":self.col=A.get("sobre",{"fort":"404040","clair":"EDEDED","texte":"FFFFFF"})
+  c=dict(self.col);c["encre"]=_ink(c["fort"],["FFFFFF",c["clair"]])  # texte coloré lisible (contraste ≥ 4,5:1)
+  c["texte"]=max(("FFFFFF","1D1A24"),key=lambda t:_cr(t,c["fort"]));self.col=c;self.lastlvl=0;self.unknown=[]
   self.fonts=cadre.get("police_texte"),cadre.get("police_titres")
   self._styles();self._numbering();self.body=self.doc.element.body;self._marks()
  # --- styles de tableaux et listes à la charte ---
@@ -113,6 +154,15 @@ class Builder:
      if ts:ts[0].text=str(v);[setattr(x,"text","")for x in ts[1:]]
      else:tc.find(qn("w:p")).append(parse_xml(f'<w:r {nsdecls("w")}><w:t xml:space="preserve">{_esc(v)}</w:t></w:r>'))
     hist.append(r)
+  if hist is not None:
+   from docx.table import Table;th=Table(hist,self.doc);_header_row(th);_caption(th,"Historique des versions","Version, date et modifications du document")
+  if inter is not None and interlocuteurs and opt.get("interlocuteurs",True):  # contacts en paragraphes (pas de tableau de mise en page)
+   for c in interlocuteurs:
+    for k,v in enumerate((c.get("nom",""),c.get("fonction",""),c.get("email",""),c.get("telephone",""))):
+     if not v:continue
+     p=self._para(self.doc,str(v),bold=(k==0));p.paragraph_format.left_indent=Cm(3);p.paragraph_format.space_before=Pt(10 if k==0 else 0);p.paragraph_format.space_after=Pt(0)
+     inter.addprevious(p._p)
+   self.body.remove(inter);inter=None
   if inter is not None:
    rows=inter.findall(qn("w:tr"))
    for r in rows[len(interlocuteurs):]:inter.remove(r)
@@ -131,6 +181,9 @@ class Builder:
   if not opt.get("page_de_garde",True):
    for e in list(self.body)[:self.body.index(next(e for e in self.body if e.tag in(qn("w:tbl"),qn("w:sdt"))or(e.tag==qn("w:p")and"".join(x.text or""for x in e.iter(qn("w:t"))).strip()==R["historique"])))]:
     if e.find(".//"+qn("w:sectPr"))is None:self.body.remove(e)
+  for e in list(self.body)[:self.body.index(self.toc)if self.toc is not None and self.toc in self.body else 30]:  # zone de texte de couverture : invisible, elle dupliquerait le titre pour les lecteurs d'écran
+   for r in e.iter(qn("w:r")):
+    if r.find(".//"+qn("w:txbxContent"))is not None and r.getparent()is not None:r.getparent().remove(r)
   s=self.doc.settings.element;u=s.find(qn("w:updateFields"))
   if u is None:u=OxmlElement("w:updateFields");s.append(u)
   u.set(qn("w:val"),"true")  # le sommaire est recalculé à l'ouverture
@@ -168,7 +221,9 @@ class Builder:
   try:f(b)
   except Exception as e:self.warn.append(f"bloc {i} ({t}) : {e}")
  def b_titre(self,b):
-  n=min(max(int(b.get("niveau",1)),1),4);p=self.doc.add_paragraph(b.get("texte",""),style=f"Heading {n}")
+  n=min(max(int(b.get("niveau",1)),1),4)
+  if n>self.lastlvl+1:self.warn.append(f"titre « {b.get('texte','')[:40]} » : niveau {n} après un niveau {self.lastlvl}, ramené à {self.lastlvl+1} (pas de saut de niveau)");n=self.lastlvl+1
+  self.lastlvl=n;p=self.doc.add_paragraph(b.get("texte",""),style=f"Heading {n}")
   if self.hnum:_numpr(p,self.hnum,n-1)  # 1, 1.1, 1.1.1… comme dans le modèle
  def b_paragraphe(self,b):
   st={"mise_en_avant":"Quote","legende":"Caption"}.get(b.get("style",""));self._para(self.doc,b.get("texte",""),st)
@@ -186,6 +241,8 @@ class Builder:
  def b_saut_de_page(self,b):self.doc.add_paragraph().add_run().add_break(WD_BREAK.PAGE)
  def b_tableau(self,b):
   rows=b.get("lignes")or[];head=b.get("entetes")or[]
+  if not head and rows:head,rows=rows[0],rows[1:];self.warn.append("tableau sans « entetes » : la 1re ligne sert d'en-têtes")
+  if any(not str(h).strip()for h in head):self.warn.append("tableau : en-tête de colonne vide — nommer chaque colonne (accessibilité)")
   nc=max([len(head)]+[len(r)for r in rows]);T=self.doc.add_table(rows=0,cols=nc)
   T.style=self.doc.styles[self.cfg["styles_tableau"].get(b.get("style","standard"),self.cfg["styles_tableau"]["standard"])]
   sz=self.cad["taille"]-1
@@ -193,26 +250,31 @@ class Builder:
    cells=T.add_row().cells
    for ci in range(nc):
     c=cells[ci];self._para(c,str(r[ci])if ci<len(r)else"","Tableau",size=sz,first=c.paragraphs[0])
-   if ri==0 and head:_repeat_header(T.rows[0])
+  _header_row(T);_caption(T,b.get("legende")or"Tableau : "+", ".join(map(str,head)))
   if b.get("largeurs"):_width(T,[w*self._usable()/100 for w in b["largeurs"]])
   if b.get("legende"):self._para(self.doc,b["legende"],"Caption")
  def b_encadre(self,b):
-  T=self.doc.add_table(rows=1,cols=1);c=T.rows[0].cells[0];_shade(c,self.col["clair"]);_borders(T,self.col["fort"],12,False);_cell_margins(T,100,160);_no_split(T.rows[0])  # encadré jamais coupé
-  first=c.paragraphs[0]
-  if b.get("titre"):self._para(c,b["titre"],bold=True,color=self.col["fort"],first=first);first=None
-  self.lines(c,b.get("contenu")or[],first=first);self.doc.add_paragraph()
+  ps=[]
+  if b.get("titre"):ps.append(self._para(self.doc,b["titre"],bold=True,color=self.col["encre"]))
+  ps+=self._boxlines(b.get("contenu")or[])
+  for i,p in enumerate(ps):_box(p,self.col["clair"],self.col["fort"],keep=i<len(ps)-1)  # encadré jamais coupé
+ def _boxlines(self,lines,size=None):
+  """Lignes d'un cadre en paragraphes : « - » devient une puce dessinée dans le texte (le cadre reste d'un seul tenant)."""
+  out=[]
+  for ln in([lines]if isinstance(lines,str)else lines):
+   s=ln.strip();m=re.match(r"^[-*•]\s+(.*)",s);lvl=(len(ln)-len(ln.lstrip(" ")))//2
+   out.append(self._para(self.doc,("\u2003"*lvl+"•\u00a0"+m[1])if m else s,size=size))
+  return out
  def b_chiffres_cles(self,b):
-  ch=b.get("chiffres")or[];T=self.doc.add_table(rows=1,cols=len(ch));_borders(T,"FFFFFF",0,False);_no_split(T.rows[0])
-  for c,x in zip(T.rows[0].cells,ch):
-   self._para(c,str(x.get("valeur","")),bold=True,color=self.col["fort"],size=self.cad["taille"]+12,first=c.paragraphs[0])
-   self._para(c,str(x.get("libelle","")),size=self.cad["taille"]-1)
-  self.doc.add_paragraph()
+  ch=b.get("chiffres")or[];T=self.doc.add_table(rows=2,cols=len(ch));_borders(T,"FFFFFF",0,False);_no_split(T.rows[0])
+  for c,x in zip(T.rows[0].cells,ch):self._para(c,str(x.get("valeur","")),bold=True,color=self.col["encre"],size=self.cad["taille"]+12,first=c.paragraphs[0])
+  for c,x in zip(T.rows[1].cells,ch):self._para(c,str(x.get("libelle","")),size=self.cad["taille"]-1,first=c.paragraphs[0])
+  _header_row(T);_caption(T,"Chiffres clés",", ".join(f"{x.get('valeur','')} {x.get('libelle','')}"for x in ch));self.doc.add_paragraph()
  def b_tableau_risques(self,b):
   L=self.cfg["echelle_risques"];rs=b.get("risques")or[];uo=any(r.get("uo")for r in rs)
   head=["Risque"]+(["UO concernée"]if uo else[])+["Probabilité","Gravité","Criticité","Parade"]
   T=self.doc.add_table(rows=1,cols=len(head));T.style=self.doc.styles[self.cfg["styles_tableau"]["standard"]];sz=self.cad["taille"]-1
   for c,h in zip(T.rows[0].cells,head):self._para(c,h,"Tableau",size=sz,first=c.paragraphs[0])
-  _repeat_header(T.rows[0])
   for r in rs:
    p,g=int(r.get("probabilite",2)),int(r.get("gravite",2));k=p*g
    cells=T.add_row().cells;vals=[r.get("risque","")]+([r.get("uo","")]if uo else[])+[L["libelles"][p-1],L["libelles"][g-1],str(k),r.get("parade","")]
@@ -220,38 +282,38 @@ class Builder:
     if ci==len(vals)-1 and isinstance(v,list):self.lines(c,v,size=sz,first=c.paragraphs[0])
     else:self._para(c,str(v),"Tableau",size=sz,first=c.paragraphs[0],bold=(ci==len(vals)-2))
    crit=cells[len(vals)-2];_shade(crit,next(x["couleur"]for x in L["criticite"]if k<=x["max"])if self.cad.get("couleurs")!="sobre"else"EDEDED")
-  _width(T,[w*self._usable()/100 for w in([28,12,11,11,9,29]if uo else[32,12,12,9,35])])
+  _width(T,[w*self._usable()/100 for w in([28,12,11,11,9,29]if uo else[32,12,12,9,35])]);_header_row(T)
+  _caption(T,b.get("legende")or"Analyse des risques","Pour chaque risque : probabilité, gravité, criticité (probabilité × gravité, 1 à 16) et parade.")
   self._para(self.doc,b.get("legende")or"Criticité = probabilité × gravité (1 à 16).","Caption")
  def b_fiche_uo(self,b):
   """Fiche d'unité d'œuvre : ligne de titre colorée puis rubriques (titre sur fond clair + contenu)."""
   T=self.doc.add_table(rows=0,cols=1);_borders(T,self.col["fort"],4);_cell_margins(T);sz=self.cad["taille"]-0.5
-  c=T.add_row().cells[0];_shade(c,self.col["fort"]);_no_split(T.rows[-1])
-  self._para(c,(f"{b['code']} – "if b.get("code")else"")+b.get("titre",""),bold=True,color=self.col.get("texte","FFFFFF"),size=self.cad["taille"]+1,first=c.paragraphs[0])
+  c=T.add_row().cells[0];_shade(c,self.col["fort"]);_no_split(T.rows[-1]);charges=[]
+  self._para(c,(f"{b['code']} – "if b.get("code")else"")+b.get("titre",""),bold=True,color=self.col["texte"],size=self.cad["taille"]+1,first=c.paragraphs[0])
   for r in b.get("rubriques")or[]:
    h=T.add_row().cells[0];_shade(h,self.col["clair"]);self._para(h,r.get("titre",""),bold=True,size=sz,first=h.paragraphs[0]);_no_split(T.rows[-1])
    cc=T.add_row().cells[0]
-   if r.get("tableau"):
-    self.lines(cc,r.get("contenu")or[],size=sz,first=cc.paragraphs[0])if r.get("contenu")else None
-    rows=r["tableau"];t2=cc.add_table(rows=0,cols=max(map(len,rows)));t2.style=self.doc.styles[self.cfg["styles_tableau"]["standard"]]
-    for ri,row in enumerate(rows):
-     for x,v in zip(t2.add_row().cells,row):self._para(x,str(v),"Tableau",size=sz-1,first=x.paragraphs[0])
-   else:self.lines(cc,r.get("contenu")or["—"],size=sz,first=cc.paragraphs[0])
+   if r.get("tableau"):charges.append((r.get("titre",""),r["tableau"]));r={**r,"contenu":(r.get("contenu")or[])+["Voir le tableau ci-après."]}
+   self.lines(cc,r.get("contenu")or["—"],size=sz,first=cc.paragraphs[0])
+  titre=(f"{b['code']} – "if b.get("code")else"")+b.get("titre","");_header_row(T);_caption(T,f"Unité d'œuvre {titre}",f"Fiche de l'unité d'œuvre {titre} : "+", ".join(x.get("titre","")for x in b.get("rubriques")or[]))
+  for lab,rows in charges:  # tableau de charge : tableau de données à part, juste après la fiche
+   self.doc.add_paragraph();t2=self.doc.add_table(rows=0,cols=max(map(len,rows)));t2.style=self.doc.styles[self.cfg["styles_tableau"]["standard"]]
+   for row in rows:
+    for x,v in zip(t2.add_row().cells,row):self._para(x,str(v),"Tableau",size=sz-1,first=x.paragraphs[0])
+   _header_row(t2);_caption(t2,f"{lab} – {titre}");self._para(self.doc,f"{lab} – {titre}","Caption")
   self.doc.add_paragraph()
  def b_fiche_profil(self,b):
-  T=self.doc.add_table(rows=1,cols=2);_borders(T,self.col["clair"],4);_cell_margins(T,80,140);l,r=T.rows[0].cells;_shade(l,self.col["clair"]);sz=self.cad["taille"]-0.5
-  self._para(l,b.get("nom",""),bold=True,color=self.col["fort"],size=self.cad["taille"]+2,first=l.paragraphs[0])
-  for x in(b.get("role"),b.get("experience")):
-   if x:self._para(l,x,size=sz)
-  if b.get("certifications"):self._para(l,"Certifications",bold=True,size=sz);self.lines(l,["- "+x for x in b["certifications"]],size=sz)
-  first=r.paragraphs[0]
-  for k,lab in(("resume",None),("competences","Compétences clés"),("experiences","Expériences significatives"),("formations","Formations")):
+  """CV synthétique en paragraphes encadrés (pas de tableau de mise en page) : nom, fonction, puis rubriques."""
+  sz=self.cad["taille"]-0.5;ps=[self._para(self.doc,b.get("nom",""),bold=True,color=self.col["encre"],size=self.cad["taille"]+2)]
+  sub=" · ".join(x for x in(b.get("role"),b.get("experience"))if x)
+  if sub:ps.append(self._para(self.doc,sub,size=sz))
+  for k,lab in(("resume",None),("competences","Compétences clés"),("experiences","Expériences significatives"),("formations","Formations"),("certifications","Certifications")):
    v=b.get(k)
    if not v:continue
-   if lab:self._para(r,lab,bold=True,color=self.col["fort"],size=sz,first=first);first=None
-   if isinstance(v,str):self._para(r,v,size=sz,first=first)
-   else:self.lines(r,["- "+(x if isinstance(x,str)else f"**{x.get('periode','')} – {x.get('client','')}** : {x.get('mission','')}")for x in v],size=sz,first=first)
-   first=None
-  _width(T,[self._usable()*.32,self._usable()*.68]);self.doc.add_paragraph()
+   if lab:ps.append(self._para(self.doc,lab,bold=True,color=self.col["encre"],size=sz))
+   ps+=[self._para(self.doc,v,size=sz)]if isinstance(v,str)else self._boxlines(["- "+(x if isinstance(x,str)else f"**{x.get('periode','')} – {x.get('client','')}** : {x.get('mission','')}")for x in v],size=sz)
+  for i,p in enumerate(ps):_box(p,self.col["clair"],self.col["fort"],keep=i<len(ps)-1)
+  self.doc.add_paragraph()
  def b_presentation_niji(self,b):
   for e in self.niji:self.final.addprevious(deepcopy(e))
  def _usable(self):
@@ -261,8 +323,28 @@ class Builder:
   if opt.get("cgv",False):
    for e in self.tail:self.final.addprevious(e)
   else:self.final.addprevious(self.sect0)
-  apply_cadre(self.doc,self.cad,self.cfg)
+  apply_cadre(self.doc,self.cad,self.cfg);self._images()
   return self.doc
+ def _images(self):
+  """Images : texte de remplacement de la configuration (empreinte de l'image), sinon marquées décoratives.
+  Les textes générés automatiquement par Office (« Une image contenant… ») sont remplacés."""
+  rules=self.cfg.get("images",{});parts={id(self.doc.part):self.doc.part}
+  for sct in self.doc.sections:
+   for hf in(sct.header,sct.footer,sct.first_page_header,sct.first_page_footer,sct.even_page_header,sct.even_page_footer):
+    try:
+     if not hf.is_linked_to_previous:parts[id(hf.part)]=hf.part
+    except Exception:pass
+  for part in parts.values():
+   for dp in part.element.iter(qn("wp:docPr")):
+    bl=dp.getparent().find(".//"+qn("a:blip"));h=None
+    if bl is not None and bl.get(qn("r:embed"))in part.rels:h=hashlib.sha1(part.related_parts[bl.get(qn("r:embed"))].blob).hexdigest()[:12]
+    rule=rules.get(h,{});cur=(dp.get("descr")or"").strip();auto=cur.startswith(("Une image contenant","A picture containing","Image contenant"))
+    for x in dp.findall(qn("a:extLst")):dp.remove(x)
+    if rule.get("alt"):dp.set("descr",rule["alt"]);continue
+    if cur and not auto and not rule.get("decoratif"):continue
+    dp.set("descr","")
+    dp.append(parse_xml(f'<a:extLst {nsdecls("a")}><a:ext uri="{{C183D7F6-B498-43B3-948B-1728B52AA6E4}}"><adec:decorative xmlns:adec="http://schemas.microsoft.com/office/drawing/2017/decorative" val="1"/></a:ext></a:extLst>'))
+    if h and not rule:self.unknown.append(h)
 
 def _esc(s):return str(s).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")
 

@@ -37,6 +37,13 @@ Le modèle `C2-Niji-Word*` est **épinglé** comme le modèle PowerPoint (embarq
 - **Nombre de pages** : exact si LibreOffice (`soffice`) est présent dans l'image, sinon **estimation** (écart constaté de ± 2 pages sur 12 à 14 pages) ; un dépassement de `pages_max` est signalé avec le pourcentage à retirer.
 - **Unités d'œuvre** : `fiche_uo` reproduit la présentation des réponses à appels d'offres (titre coloré, rubriques Objectif, Prérequis, Méthode, Livrables, Facteurs clés de succès, Principaux risques, Profils et hypothèses de charge, tableau de charge facultatif). La **bibliothèque d'UO** est extraite des réponses passées : `python server.py bundle-uo <dossier de .docx>` → `catalog/bundle/uo_library.json` (hors Git, contenu client confidentiel) ; le chat la consulte avec `search_uo` / `get_uo` et adapte la fiche.
 - **Plans types** : mémoire technique, réponse organisation / RH, plan d'assurance sécurité (dans `catalog/docx.json`).
+- **Accessibilité (document et PDF exporté)** : le document est construit pour qu'un export PDF depuis Word (Enregistrer sous PDF, balises d'accessibilité, actives par défaut) soit balisé et accessible :
+  - titre et langue du document renseignés (le PDF affiche le titre et déclare le français) ; titres hiérarchisés, un saut de niveau est corrigé et signalé ;
+  - tableaux de données uniquement, avec ligne d'en-têtes répétée et titre/description (`tblCaption`) ; plus de tableau de mise en page : encadré et fiche profil en paragraphes encadrés, interlocuteurs en paragraphes, tableau de charge d'UO placé après la fiche (pas de tableau imbriqué) ;
+  - images du modèle avec texte de remplacement reconnu par empreinte (`images` dans `catalog/docx.json`) ; visuels d'ambiance et images inconnues marqués décoratifs (artefacts dans le PDF) ; textes générés automatiquement par Office remplacés ; zone de texte cachée de la page de garde retirée ;
+  - couleurs de texte calculées pour un contraste d'au moins 4,5:1 (texte coloré, ligne de titre des fiches UO) ;
+  - vraies listes (puces et numéros), légendes en style Légende.
+  Contrôle effectué sur le PDF exporté par Word : balisé, langue `fr`, titre affiché, 4 figures avec texte de remplacement, 7 tableaux avec en-têtes (`THead`/`TH`), titres H1-H2 sans saut, listes `L`/`LI`.
 
 ### PowerPoint : catalogue de diapos
 Le chat ne manipule pas le modèle directement : il choisit parmi des **diapos autorisées**, présentées par rubrique (Ouverture, Structure, Messages, Contenu, Zoom, Démarche, Chiffres, Niji, Annexes, Clôture), et remplit des **champs nommés** (`titre`, `col1_points`…). Le serveur s'occupe de la mise en forme.
@@ -222,7 +229,9 @@ Le rendu PowerPoint et Word (cadre Niji) suppose les polices N27 installées sur
 - [ ] Polices N27 : vérifier la licence et l'éventuel embarquement dans les fichiers destinés aux clients.
 - [x] **Accessibilité** : titre sur chaque diapo, ordre de lecture logique, en-têtes de tableaux déclarés, images et formes décoratives marquées. Mesuré sur la présentation de 28 diapos : 6 diapos sans titre, 11 images et 23 formes sans texte de remplacement, 2 tableaux sans en-tête déclaré → 0 ; rendu identique au pixel près (hors en-têtes nommés).
 - [ ] Accessibilité, limites : quand un en-tête est posé sur un cadre plein (comitologie), le cadre est lu avant son en-tête pour ne pas le masquer ; les pages Niji figées ont leur texte dans la disposition (non lu par les lecteurs d'écran : seul le titre ajouté est annoncé) ; l'ordre des CGV suit la géométrie et peut placer un paragraphe avant son intertitre. Valider avec le vérificateur d'accessibilité de PowerPoint et un lecteur d'écran (NVDA).
-- [ ] Accessibilité Word : en-têtes de tableaux répétés en place ; vérifier les textes de remplacement des images du modèle (page de garde, présentation Niji) et l'ordre de lecture des zones de texte.
+- [x] Accessibilité Word et PDF exporté : textes de remplacement, en-têtes et descriptions de tableaux, suppression des tableaux de mise en page et imbriqués, contrastes, hiérarchie des titres (contrôlé sur PDF balisé exporté par Word).
+- [ ] Accessibilité Word, limites : dans les encadrés et fiches profil, les puces sont dessinées dans le texte (le cadre resterait sinon découpé), donc non balisées comme listes ; paragraphes vides d'espacement hérités du modèle (CGV) ; pied de page gris clair (artefact dans le PDF, contraste faible). Valider avec PAC (PDF Accessibility Checker) et le vérificateur d'accessibilité de Word.
+- [ ] Génération directe d'un PDF/UA par le serveur (LibreOffice avec PDF balisé) si les utilisateurs ne passent pas par Word.
 
 ### Diapos de l'utilisateur
 - [x] Dépôt, analyse d'écart au modèle, ajout au catalogue personnel et génération : testé de bout en bout en HTTP (diapos conformes à 100/100, diapo retouchée en Arial avec couleur hors palette en alerte à 75/100, graphique et présentation hors modèle refusés, isolement entre deux utilisateurs, rendu vérifié).

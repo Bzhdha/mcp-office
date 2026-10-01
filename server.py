@@ -104,7 +104,9 @@ def wcatalog(refresh=False):
   name,b=latest("docx",cfg.get("prefixe_modele",""));CAT.mkdir(parents=True,exist_ok=True);(CAT/name).write_bytes(b)
   st={"template":name,"analyzed":time.strftime("%Y-%m-%d %H:%M")};sf.write_text(json.dumps(st,ensure_ascii=False,indent=1),"utf8")
  b=_untemplate((CAT/st["template"]).read_bytes()).getvalue();warn=[]
- try:W.Builder(b,cfg,dict(cfg["cadres"]["niji"]),cfg["ambiance_defaut"])  # vérifie les repères du modèle
+ try:  # vérifie les repères du modèle et les textes de remplacement de ses images (document complet : présentation Niji et CGV)
+  Bc=W.Builder(b,cfg,dict(cfg["cadres"]["niji"]),cfg["ambiance_defaut"]);Bc.front("Contrôle","",[{}],[],{});Bc.b_presentation_niji({});Bc.finish({"cgv":True})
+  if Bc.unknown:warn.append("images du modèle sans texte de remplacement configuré (marquées décoratives) : "+", ".join(sorted(set(Bc.unknown)))+" — compléter « images » dans catalog/docx.json")
  except Exception as e:warn.append(f"repères du modèle Word introuvables ({e}) : adapter « reperes » dans catalog/docx.json")
  _wcat["c"]={**st,"cfg":cfg,"bytes":b,"warnings":warn};return _wcat["c"]
 def _uolib():

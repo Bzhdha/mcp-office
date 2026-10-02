@@ -1,0 +1,1780 @@
+{
+ "about": "Catalogue des diapos exposées au chat pour le modèle « C2-Niji-Proposition commerciale type 2026 » (qui embarque les dispositions du thème « C2-Niji-Powerpoint_Theme_2026 »). source : {type: n° de diapo type | [n°…]}, {layout: nom | [noms…]} ou {family: famille de variantes détectée à l'analyse}. zone : nom de forme, « Nom#n » ou « @idx ». Vérifier avec refresh_template après chaque nouveau modèle.",
+ "rules": [
+  "Structure type : couverture → sommaire → pour chaque partie un « intercalaire » (numéro et titre identiques au sommaire), éventuellement des « sous_intercalaire » (numéro 1.1, 1.2…) → contenu → conclusion.",
+  "Varier les mises en page : ne pas enchaîner plus de 2 diapos du même modèle (hors intercalaires et « detail »). Utiliser « citation » ou « message_cle » pour rythmer et souligner un message fort.",
+  "Une diapo = un message. Titres courts : le modèle les met en majuscules.",
+  "Mettre en valeur 1 à 2 mots-clés par titre avec **mot** (police N27 Medium, charte Niji). Pas d'autre mise en forme, pas d'emoji ni de symbole.",
+  "Respecter les limites de caractères et de lignes : le texte ne doit jamais déborder des zones.",
+  "Charte : une seule ambiance couleur par document (paramètre « ambiance ») ; ne pas imposer de « variante » d'une autre ambiance sans demande explicite.",
+  "Les diapos de la rubrique « Niji » ont un contenu officiel figé : les insérer telles quelles, sans champ.",
+  "Ne pas inventer de chiffres, de noms ou de références client : laisser un libellé explicite à compléter (ex. « [Nom du client] »).",
+  "Accessibilité : chaque tableau a une ligne d'en-têtes entièrement nommée ; le titre de chaque diapo est explicite (il est annoncé par les lecteurs d'écran)."
+ ],
+ "ambiances": {
+  "orange": "rose-orangé (chaud)",
+  "magenta": "violet-magenta",
+  "turquoise": "vert-turquoise (froid)"
+ },
+ "default_ambiance": "magenta",
+ "groups": [
+  {
+   "name": "Ouverture",
+   "models": [
+    "couverture",
+    "couverture_sobre",
+    "sommaire"
+   ]
+  },
+  {
+   "name": "Structure",
+   "help": "découpage en parties et sous-parties",
+   "models": [
+    "intercalaire",
+    "sous_intercalaire"
+   ]
+  },
+  {
+   "name": "Messages",
+   "help": "diapos de respiration, à intercaler entre les diapos denses",
+   "models": [
+    "citation",
+    "message_cle",
+    "duo",
+    "mots_cles"
+   ]
+  },
+  {
+   "name": "Contenu",
+   "models": [
+    "texte",
+    "deux_colonnes",
+    "trois_colonnes",
+    "quatre_colonnes",
+    "texte_et_colonnes",
+    "pyramide",
+    "cycle",
+    "tableau",
+    "tableau_deux_colonnes"
+   ]
+  },
+  {
+   "name": "Zoom",
+   "help": "approfondir un chantier, une phase, un sujet",
+   "models": [
+    "detail",
+    "etape",
+    "etape_objectif"
+   ]
+  },
+  {
+   "name": "Démarche et organisation",
+   "models": [
+    "trois_phases",
+    "objectifs",
+    "objectifs_detail",
+    "deux_instances"
+   ]
+  },
+  {
+   "name": "Chiffres",
+   "models": [
+    "chiffres_cles",
+    "chiffres_cles_6"
+   ]
+  },
+  {
+   "name": "Niji",
+   "help": "présentation officielle de Niji, contenu figé",
+   "models": [
+    "niji_a_propos",
+    "niji_digital_factory",
+    "niji_engagements",
+    "niji_clients",
+    "niji_partenaires_retail",
+    "niji_recompenses",
+    "niji_rse",
+    "niji_certifications",
+    "niji_objectifs_intro"
+   ]
+  },
+  {
+   "name": "Annexes",
+   "models": [
+    "conditions_generales"
+   ]
+  },
+  {
+   "name": "Clôture",
+   "models": [
+    "conclusion",
+    "conclusion_titre"
+   ]
+  }
+ ],
+ "models": {
+  "couverture": {
+   "usage": "Première diapo avec visuel : titre du document, client, version.",
+   "source": {
+    "family": "Intro"
+   },
+   "variants": {
+    "Intro 1": {
+     "label": "visage, rose-orangé",
+     "ambiance": "orange"
+    },
+    "Intro 2": {
+     "label": "silhouette, violet",
+     "ambiance": "magenta"
+    },
+    "Intro 3": {
+     "label": "main et téléphone, turquoise",
+     "ambiance": "turquoise"
+    },
+    "Intro 4": {
+     "label": "silhouette lumineuse, turquoise",
+     "ambiance": "turquoise"
+    }
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "kind": "lines",
+     "max": 22,
+     "max_lines": 3,
+     "help": "1 à 3 lignes courtes : [\"Stratégie\", \"de tests\"]"
+    },
+    "client": {
+     "zone": "@12",
+     "max": 18,
+     "help": "ex. « Niji x Client »"
+    },
+    "version": {
+     "zone": "@11",
+     "max": 20,
+     "help": "ex. « V1 - 01/10/2026 »"
+    }
+   }
+  },
+  "couverture_sobre": {
+   "usage": "Couverture sans photo (dégradé) : documents internes, notes.",
+   "source": {
+    "family": "Editable Intro"
+   },
+   "variants": {
+    "Editable Intro 1": {
+     "label": "dégradé rose-orangé",
+     "ambiance": "orange"
+    },
+    "Editable Intro 2": {
+     "label": "dégradé vert-violet",
+     "ambiance": "turquoise"
+    }
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "kind": "lines",
+     "max": 22,
+     "max_lines": 3
+    },
+    "client": {
+     "zone": "@12",
+     "max": 18
+    },
+    "version": {
+     "zone": "@11",
+     "max": 20
+    }
+   }
+  },
+  "sommaire": {
+   "usage": "Plan de la présentation (numérotation automatique).",
+   "source": {
+    "type": 2
+   },
+   "fixed": {
+    "Titre 2": "Sommaire"
+   },
+   "fields": {
+    "parties": {
+     "zone": "Sous-titre 1",
+     "kind": "lines",
+     "max": 45,
+     "max_lines": 9,
+     "help": "une ligne par partie ; 2 espaces en début de ligne = sous-partie"
+    }
+   }
+  },
+  "intercalaire": {
+   "usage": "Début de partie : grand numéro, titre, visuel pleine hauteur.",
+   "source": {
+    "family": "Intercalaire-Niveau1"
+   },
+   "variants": {
+    "Intercalaire-Niveau1_1": {
+     "label": "réunion, rose-orangé",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau1_2": {
+     "label": "ville, violet",
+     "ambiance": "magenta"
+    },
+    "Intercalaire-Niveau1_3": {
+     "label": "équipe, violet",
+     "ambiance": "magenta"
+    },
+    "Intercalaire-Niveau1_4": {
+     "label": "visage et chiffres, rouge",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau1_5": {
+     "label": "ordinateur, turquoise",
+     "ambiance": "turquoise"
+    },
+    "Intercalaire-Niveau1_6": {
+     "label": "silhouette, violet",
+     "ambiance": "magenta"
+    },
+    "Intercalaire-Niveau1_8": {
+     "label": "couloir, rose",
+     "ambiance": "magenta"
+    },
+    "Intercalaire-Niveau1_9": {
+     "label": "silhouette, cyan",
+     "ambiance": "turquoise"
+    },
+    "Intercalaire-Niveau1_10": {
+     "label": "profil binaire, violet",
+     "ambiance": "magenta"
+    },
+    "Intercalaire-Niveau1_11": {
+     "label": "femme et ordinateur, rose-orangé",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau1_12": {
+     "label": "train, orange",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau1_13": {
+     "label": "tablette, jaune-orangé",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau1_14": {
+     "label": "éoliennes, vert",
+     "ambiance": "turquoise"
+    }
+   },
+   "fields": {
+    "numero": {
+     "zone": "@10",
+     "max": 2,
+     "help": "numéro de la partie"
+    },
+    "titre": {
+     "zone": "@0",
+     "max": 28,
+     "help": "titre de la partie, 2 lignes max"
+    },
+    "accroche": {
+     "zone": "@14",
+     "max": 90,
+     "help": "facultatif : une phrase sous le titre",
+     "bullets": false
+    }
+   }
+  },
+  "sous_intercalaire": {
+   "usage": "Début de sous-partie : numéro à 2 niveaux (ex. 2.1) et titre, sans photo.",
+   "source": {
+    "family": "Intercalaire-Niveau2"
+   },
+   "variants": {
+    "Intercalaire-Niveau2_1": {
+     "label": "filet orange-rose",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau2_2": {
+     "label": "filet violet-vert",
+     "ambiance": "turquoise"
+    },
+    "Intercalaire-Niveau2_3": {
+     "label": "filet orange-rouge",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau2_4": {
+     "label": "filet rose-jaune",
+     "ambiance": "orange"
+    },
+    "Intercalaire-Niveau2_5": {
+     "label": "filet rose-violet",
+     "ambiance": "magenta"
+    }
+   },
+   "fields": {
+    "numero": {
+     "zone": "@10",
+     "max": 4,
+     "help": "ex. « 2.1 »"
+    },
+    "titre": {
+     "zone": "@0",
+     "max": 30
+    }
+   }
+  },
+  "citation": {
+   "usage": "Message fort ou citation sur fond coloré plein écran.",
+   "source": {
+    "family": "One liners & Quotes - Color"
+   },
+   "variants": {
+    "One liners & Quotes - Color 1": {
+     "label": "dégradé violet-turquoise",
+     "ambiance": "turquoise"
+    },
+    "One liners & Quotes - Color 4": {
+     "label": "dégradé magenta-orange",
+     "ambiance": "orange"
+    }
+   },
+   "fields": {
+    "message": {
+     "zone": "@0",
+     "max": 60,
+     "help": "phrase courte, 2 lignes"
+    },
+    "precision": {
+     "zone": "@10",
+     "max": 120,
+     "help": "facultatif : auteur ou complément",
+     "bullets": false
+    }
+   }
+  },
+  "message_cle": {
+   "usage": "Une idée clé en grand avec visuel et une courte explication.",
+   "source": {
+    "layout": "Title + Small explanation 1"
+   },
+   "fields": {
+    "message": {
+     "zone": "@0",
+     "max": 50
+    },
+    "explication": {
+     "zone": "@10",
+     "max": 160
+    }
+   }
+  },
+  "duo": {
+   "usage": "Deux notions associées (« X & Y ») et leur explication.",
+   "source": {
+    "layout": "Highlighted text + Body copy"
+   },
+   "fixed": {
+    "@14": "&"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 80
+    },
+    "chapeau": {
+     "zone": "@15",
+     "max": 50,
+     "help": "au-dessus des deux notions"
+    },
+    "notion1": {
+     "zone": "@13",
+     "max": 18
+    },
+    "notion2": {
+     "zone": "@12",
+     "max": 18
+    },
+    "note": {
+     "zone": "@16",
+     "max": 90,
+     "help": "sous les notions"
+    },
+    "explication": {
+     "zone": "@11",
+     "kind": "lines",
+     "max": 120,
+     "max_lines": 8,
+     "help": "colonne de droite"
+    }
+   }
+  },
+  "mots_cles": {
+   "usage": "5 mots-clés en grand (principes, valeurs), chacun avec une explication.",
+   "source": {
+    "layout": "Highlighted Words"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@21",
+     "max": 60
+    },
+    "mot1": {
+     "zone": "@10",
+     "max": 14
+    },
+    "texte1": {
+     "zone": "@11",
+     "max": 80
+    },
+    "mot2": {
+     "zone": "@13",
+     "max": 14
+    },
+    "texte2": {
+     "zone": "@14",
+     "max": 80
+    },
+    "mot3": {
+     "zone": "@15",
+     "max": 14
+    },
+    "texte3": {
+     "zone": "@16",
+     "max": 80
+    },
+    "mot4": {
+     "zone": "@17",
+     "max": 14
+    },
+    "texte4": {
+     "zone": "@18",
+     "max": 80
+    },
+    "mot5": {
+     "zone": "@19",
+     "max": 14
+    },
+    "texte5": {
+     "zone": "@20",
+     "max": 80
+    }
+   }
+  },
+  "texte": {
+   "usage": "Texte libre en liste (à éviter si une autre mise en page convient).",
+   "source": {
+    "layout": "Titre et texte"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 80
+    },
+    "points": {
+     "zone": "@1",
+     "kind": "lines",
+     "max": 150,
+     "max_lines": 10
+    }
+   }
+  },
+  "deux_colonnes": {
+   "usage": "2 idées numérotées en parallèle (avant/après, deux options…).",
+   "source": {
+    "layout": "Title + 2 Columns"
+   },
+   "fixed": {
+    "@26": "1",
+    "@31": "2"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 80
+    },
+    "col1_titre": {
+     "zone": "@25",
+     "max": 40,
+     "breaks": true
+    },
+    "col1_accroche": {
+     "zone": "@27",
+     "max": 55
+    },
+    "col1_points": {
+     "zone": "@28",
+     "kind": "lines",
+     "max": 120,
+     "max_lines": 6
+    },
+    "col1_note": {
+     "zone": "@29",
+     "max": 80
+    },
+    "col2_titre": {
+     "zone": "@30",
+     "max": 40,
+     "breaks": true
+    },
+    "col2_accroche": {
+     "zone": "@22",
+     "max": 55
+    },
+    "col2_points": {
+     "zone": "@23",
+     "kind": "lines",
+     "max": 120,
+     "max_lines": 6
+    },
+    "col2_note": {
+     "zone": "@24",
+     "max": 80
+    }
+   }
+  },
+  "trois_colonnes": {
+   "usage": "3 idées numérotées côte à côte (enjeux, objectifs, risques…) : titre, accroche encadrée, points.",
+   "source": {
+    "layout": "Title + 3 Columns"
+   },
+   "fixed": {
+    "@26": "1",
+    "@36": "2",
+    "@41": "3"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 80
+    },
+    "col1_titre": {
+     "zone": "@25",
+     "max": 30,
+     "breaks": true,
+     "help": "2 lignes courtes : [\"Continuité\", \"de service\"]"
+    },
+    "col1_accroche": {
+     "zone": "@27",
+     "max": 42,
+     "help": "phrase-clé encadrée, 1 ligne"
+    },
+    "col1_points": {
+     "zone": "@28",
+     "kind": "lines",
+     "max": 90,
+     "max_lines": 5
+    },
+    "col1_note": {
+     "zone": "@29",
+     "max": 60,
+     "help": "facultatif, bas de colonne"
+    },
+    "col2_titre": {
+     "zone": "@35",
+     "max": 30,
+     "breaks": true
+    },
+    "col2_accroche": {
+     "zone": "@37",
+     "max": 42
+    },
+    "col2_points": {
+     "zone": "@38",
+     "kind": "lines",
+     "max": 90,
+     "max_lines": 5
+    },
+    "col2_note": {
+     "zone": "@39",
+     "max": 60
+    },
+    "col3_titre": {
+     "zone": "@40",
+     "max": 30,
+     "breaks": true
+    },
+    "col3_accroche": {
+     "zone": "@42",
+     "max": 42
+    },
+    "col3_points": {
+     "zone": "@43",
+     "kind": "lines",
+     "max": 90,
+     "max_lines": 5
+    },
+    "col3_note": {
+     "zone": "@44",
+     "max": 60
+    }
+   }
+  },
+  "quatre_colonnes": {
+   "usage": "4 blocs numérotés (chantiers, engagements, piliers) : étiquette, titre, points.",
+   "source": {
+    "type": 16
+   },
+   "fixed": {
+    "Espace réservé du texte 3": "1",
+    "Espace réservé du texte 8": "2",
+    "Espace réservé du texte 13": "3",
+    "Espace réservé du texte 18": "4"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "Espace réservé du texte 22",
+     "max": 80
+    },
+    "col1_etiquette": {
+     "zone": "Espace réservé du texte 2",
+     "max": 14,
+     "help": "1 mot"
+    },
+    "col1_titre": {
+     "zone": "Espace réservé du texte 4",
+     "max": 26,
+     "upper": true,
+     "breaks": true,
+     "help": "2 lignes courtes : [\"Migration\", \"des clients\"]"
+    },
+    "col1_points": {
+     "zone": "Espace réservé du texte 5",
+     "kind": "lines",
+     "max": 50,
+     "max_lines": 5
+    },
+    "col2_etiquette": {
+     "zone": "Espace réservé du texte 7",
+     "max": 14
+    },
+    "col2_titre": {
+     "zone": "Espace réservé du texte 9",
+     "max": 26,
+     "upper": true,
+     "breaks": true
+    },
+    "col2_points": {
+     "zone": "Espace réservé du texte 10",
+     "kind": "lines",
+     "max": 50,
+     "max_lines": 5
+    },
+    "col3_etiquette": {
+     "zone": "Espace réservé du texte 12",
+     "max": 14
+    },
+    "col3_titre": {
+     "zone": "Espace réservé du texte 14",
+     "max": 26,
+     "upper": true,
+     "breaks": true
+    },
+    "col3_points": {
+     "zone": "Espace réservé du texte 15",
+     "kind": "lines",
+     "max": 50,
+     "max_lines": 5
+    },
+    "col4_etiquette": {
+     "zone": "Espace réservé du texte 17",
+     "max": 14
+    },
+    "col4_titre": {
+     "zone": "Espace réservé du texte 19",
+     "max": 26,
+     "upper": true,
+     "breaks": true
+    },
+    "col4_points": {
+     "zone": "Espace réservé du texte 20",
+     "kind": "lines",
+     "max": 50,
+     "max_lines": 5
+    }
+   }
+  },
+  "texte_et_colonnes": {
+   "usage": "Un texte d'introduction à gauche et 2 blocs numérotés à droite.",
+   "source": {
+    "layout": "Title + Text + Columns"
+   },
+   "fixed": {
+    "@39": "1",
+    "@44": "2"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 80
+    },
+    "introduction": {
+     "zone": "@25",
+     "kind": "lines",
+     "max": 150,
+     "max_lines": 6
+    },
+    "col1_titre": {
+     "zone": "@38",
+     "max": 26,
+     "breaks": true
+    },
+    "col1_accroche": {
+     "zone": "@40",
+     "max": 40
+    },
+    "col1_points": {
+     "zone": "@41",
+     "kind": "lines",
+     "max": 50,
+     "max_lines": 5
+    },
+    "col1_note": {
+     "zone": "@42",
+     "max": 50
+    },
+    "col2_titre": {
+     "zone": "@43",
+     "max": 26,
+     "breaks": true
+    },
+    "col2_accroche": {
+     "zone": "@45",
+     "max": 40
+    },
+    "col2_points": {
+     "zone": "@46",
+     "kind": "lines",
+     "max": 50,
+     "max_lines": 5
+    },
+    "col2_note": {
+     "zone": "@47",
+     "max": 50
+    }
+   }
+  },
+  "pyramide": {
+   "usage": "4 niveaux hiérarchisés (niveaux de tests, maturité…) : niveau 1 = sommet.",
+   "source": {
+    "layout": "Pyramid - Grayscale"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 80
+    },
+    "niveau1_titre": {
+     "zone": "@10",
+     "max": 10,
+     "help": "sommet étroit : 1 mot court"
+    },
+    "niveau1_texte": {
+     "zone": "@14",
+     "max": 140
+    },
+    "niveau2_titre": {
+     "zone": "@15",
+     "max": 14
+    },
+    "niveau2_texte": {
+     "zone": "@11",
+     "max": 140
+    },
+    "niveau3_titre": {
+     "zone": "@16",
+     "max": 16
+    },
+    "niveau3_texte": {
+     "zone": "@12",
+     "max": 140
+    },
+    "niveau4_titre": {
+     "zone": "@17",
+     "max": 18
+    },
+    "niveau4_texte": {
+     "zone": "@13",
+     "max": 140
+    }
+   }
+  },
+  "cycle": {
+   "usage": "Démarche continue ou cycle : 8 étapes autour d'un cercle (4 à gauche, 4 à droite) et une notion centrale.",
+   "source": {
+    "layout": "Circular Diagram"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "@35",
+     "max": 80
+    },
+    "centre": {
+     "zone": "@10",
+     "max": 30
+    },
+    "etape1_titre": {
+     "zone": "@20",
+     "max": 30
+    },
+    "etape1_texte": {
+     "zone": "@19",
+     "max": 70
+    },
+    "etape2_titre": {
+     "zone": "@22",
+     "max": 30
+    },
+    "etape2_texte": {
+     "zone": "@21",
+     "max": 70
+    },
+    "etape3_titre": {
+     "zone": "@24",
+     "max": 30
+    },
+    "etape3_texte": {
+     "zone": "@23",
+     "max": 70
+    },
+    "etape4_titre": {
+     "zone": "@26",
+     "max": 30
+    },
+    "etape4_texte": {
+     "zone": "@25",
+     "max": 70
+    },
+    "etape5_titre": {
+     "zone": "@28",
+     "max": 30
+    },
+    "etape5_texte": {
+     "zone": "@27",
+     "max": 70
+    },
+    "etape6_titre": {
+     "zone": "@30",
+     "max": 30
+    },
+    "etape6_texte": {
+     "zone": "@29",
+     "max": 70
+    },
+    "etape7_titre": {
+     "zone": "@32",
+     "max": 30
+    },
+    "etape7_texte": {
+     "zone": "@31",
+     "max": 70
+    },
+    "etape8_titre": {
+     "zone": "@34",
+     "max": 30
+    },
+    "etape8_texte": {
+     "zone": "@33",
+     "max": 70
+    }
+   }
+  },
+  "tableau": {
+   "usage": "Tableau comparatif ou matrice jusqu'à 6 colonnes ; la 2e colonne est mise en avant par le modèle.",
+   "source": {
+    "type": 10
+   },
+   "fixed": {
+    "Rectangle 10": null
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "tableau": {
+     "zone": "Tableau 9",
+     "kind": "table",
+     "max_rows": 11,
+     "max_cols": 6,
+     "help": "1re ligne = en-têtes, une par colonne, toutes nommées (accessibilité) ; cellules ≤ 25 car."
+    }
+   }
+  },
+  "tableau_deux_colonnes": {
+   "usage": "Liste libellé → description (environnements, hypothèses, glossaire), jusqu'à 10 lignes.",
+   "source": {
+    "type": 14
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "Espace réservé du texte 3",
+     "max": 80
+    },
+    "tableau": {
+     "zone": "Tableau 5",
+     "kind": "table",
+     "max_rows": 11,
+     "max_cols": 2,
+     "help": "1re ligne = en-têtes nommés, ex. [\"Env.\", \"Usage\"] (accessibilité) ; 1re colonne étroite : en-tête et libellés ≤ 10 car., descriptions ≤ 90 car."
+    }
+   }
+  },
+  "detail": {
+   "usage": "Fiche complète d'un chantier ou d'une phase : bandeau violet numéroté, objectif, activités, livrables, prérequis, encadré outillage.",
+   "source": {
+    "type": 34
+   },
+   "fields": {
+    "numero": {
+     "zone": "Espace réservé du texte 5",
+     "max": 2
+    },
+    "etiquette": {
+     "zone": "Espace réservé du texte 4",
+     "max": 36,
+     "help": "nom du chantier, mots ≤ 12 car. (bandeau étroit)"
+    },
+    "objectif": {
+     "zone": "Espace réservé du texte 2",
+     "max": 130
+    },
+    "activites": {
+     "zone": "Espace réservé du texte 3#1",
+     "kind": "lines",
+     "prefix": [
+      "NOS ACTIVITÉS :"
+     ],
+     "max": 110,
+     "max_lines": 6,
+     "help": "« **Mot-clé** : description »"
+    },
+    "livrables": {
+     "zone": "Espace réservé du texte 3#2",
+     "kind": "lines",
+     "max": 45,
+     "max_lines": 4
+    },
+    "prerequis": {
+     "zone": "Espace réservé du texte 3#3",
+     "kind": "lines",
+     "max": 50,
+     "max_lines": 4
+    },
+    "encadre_titre": {
+     "zone": "Espace réservé du texte 3#7",
+     "max": 18,
+     "upper": true,
+     "default": "Accélérateurs Niji"
+    },
+    "encadre_points": {
+     "zone": "Espace réservé du texte 3#4",
+     "kind": "lines",
+     "max": 40,
+     "max_lines": 5
+    }
+   }
+  },
+  "etape": {
+   "usage": "Fiche d'une étape ou d'un sujet avec photo : numéro, étiquette, intertitre, contenu, prérequis et livrables à droite, titre sous la photo.",
+   "source": {
+    "type": [
+     20,
+     22,
+     23
+    ]
+   },
+   "variants": {
+    "20": {
+     "label": "photo, filet orange-rose",
+     "ambiance": "orange"
+    },
+    "22": {
+     "label": "photo, filet magenta",
+     "ambiance": "magenta"
+    },
+    "23": {
+     "label": "photo, filet turquoise",
+     "ambiance": "turquoise"
+    }
+   },
+   "fields": {
+    "numero": {
+     "zone": "Espace réservé du texte 6#1",
+     "max": 2
+    },
+    "etiquette": {
+     "zone": "Espace réservé du texte 5",
+     "max": 22,
+     "upper": true
+    },
+    "titre": {
+     "zone": "Titre 1",
+     "max": 70,
+     "help": "sous la photo, 3 lignes courtes"
+    },
+    "intertitre": {
+     "zone": "Espace réservé du texte 2",
+     "max": 45
+    },
+    "contenu": {
+     "zone": "Espace réservé du texte 3",
+     "kind": "lines",
+     "max": 120,
+     "max_lines": 14,
+     "help": "1re ligne = phrase d'introduction, puis intertitres (sans tiret) suivis de points « - » : [\"Intro…\", \"Kick-off\", \"- point\", …]"
+    },
+    "prerequis": {
+     "zone": "Espace réservé du texte 6#2",
+     "kind": "lines",
+     "prefix": [
+      "Prérequis client"
+     ],
+     "max": 40,
+     "max_lines": 5
+    },
+    "livrables": {
+     "zone": "Espace réservé du texte 6#3",
+     "kind": "lines",
+     "prefix": [
+      "LIVRABLES"
+     ],
+     "max": 40,
+     "max_lines": 6
+    }
+   }
+  },
+  "etape_objectif": {
+   "usage": "Fiche d'une étape sans photo (panneau violet) : contenu au centre, objectif, prérequis et livrables à droite.",
+   "source": {
+    "type": 27
+   },
+   "fields": {
+    "numero": {
+     "zone": "Espace réservé du texte 6#1",
+     "max": 2
+    },
+    "etiquette": {
+     "zone": "Espace réservé du texte 5",
+     "max": 20
+    },
+    "titre": {
+     "zone": "Titre 1",
+     "max": 90,
+     "help": "en bas du panneau, 4 lignes courtes"
+    },
+    "contenu": {
+     "zone": "Sous-titre 5",
+     "kind": "lines",
+     "max": 120,
+     "max_lines": 16,
+     "help": "intertitres en MAJUSCULES (sans tiret) suivis de points « - » : [\"CONCEPTION DÉTAILLÉE\", \"- point\", …]"
+    },
+    "objectif": {
+     "zone": "Espace réservé du texte 6#2",
+     "kind": "lines",
+     "prefix": [
+      "OBJECTIF"
+     ],
+     "max": 110,
+     "max_lines": 3
+    },
+    "prerequis": {
+     "zone": "Espace réservé du texte 6#3",
+     "kind": "lines",
+     "prefix": [
+      "Prérequis client"
+     ],
+     "max": 45,
+     "max_lines": 4
+    },
+    "livrables": {
+     "zone": "Espace réservé du texte 6#4",
+     "kind": "lines",
+     "prefix": [
+      "LIVRABLES"
+     ],
+     "max": 45,
+     "max_lines": 5
+    }
+   }
+  },
+  "trois_phases": {
+   "usage": "Démarche en 3 phases avec 2 jalons ; la phase 2 se découpe en 3 étapes.",
+   "source": {
+    "type": 26
+   },
+   "fixed": {
+    "ZoneTexte 11": null
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "Espace réservé du texte 3",
+     "max": 80
+    },
+    "phase1_titre": {
+     "zone": "Titre 4#1",
+     "max": 18
+    },
+    "phase1_texte": {
+     "zone": "ZoneTexte 12",
+     "max": 170
+    },
+    "jalon1": {
+     "zone": "ZoneTexte 18",
+     "max": 14,
+     "help": "jalon entre phases 1 et 2"
+    },
+    "phase2_titre": {
+     "zone": "Titre 4#3",
+     "max": 40
+    },
+    "etape2a_titre": {
+     "zone": "ZoneTexte 8",
+     "max": 20
+    },
+    "etape2a_texte": {
+     "zone": "ZoneTexte 13",
+     "max": 170
+    },
+    "etape2b_titre": {
+     "zone": "ZoneTexte 9",
+     "max": 20
+    },
+    "etape2b_texte": {
+     "zone": "ZoneTexte 14",
+     "max": 170
+    },
+    "etape2c_titre": {
+     "zone": "ZoneTexte 10",
+     "max": 20
+    },
+    "etape2c_texte": {
+     "zone": "ZoneTexte 15",
+     "max": 170
+    },
+    "jalon2": {
+     "zone": "ZoneTexte 21",
+     "max": 14,
+     "help": "jalon entre phases 2 et 3"
+    },
+    "phase3_titre": {
+     "zone": "Titre 4#5",
+     "max": 16
+    },
+    "phase3_texte": {
+     "zone": "ZoneTexte 16",
+     "max": 170
+    }
+   }
+  },
+  "objectifs": {
+   "usage": "3 objectifs prioritaires côte à côte, grands numéros.",
+   "source": {
+    "family": "All Objectives"
+   },
+   "variants": {
+    "All Objectives 1": {
+     "label": "liseré orange-rose",
+     "ambiance": "orange"
+    },
+    "All Objectives 2": {
+     "label": "liseré violet",
+     "ambiance": "magenta"
+    },
+    "All Objectives 3": {
+     "label": "liseré turquoise",
+     "ambiance": "turquoise"
+    }
+   },
+   "fixed": {
+    "@12": "1",
+    "@16": "2",
+    "@18": "3"
+   },
+   "fields": {
+    "obj1_titre": {
+     "zone": "@0",
+     "max": 40
+    },
+    "obj1_texte": {
+     "zone": "@15",
+     "max": 90
+    },
+    "obj1_detail": {
+     "zone": "@22",
+     "max": 90
+    },
+    "obj2_titre": {
+     "zone": "@20",
+     "max": 40,
+     "upper": true
+    },
+    "obj2_texte": {
+     "zone": "@17",
+     "max": 90
+    },
+    "obj2_detail": {
+     "zone": "@23",
+     "max": 90
+    },
+    "obj3_titre": {
+     "zone": "@21",
+     "max": 40,
+     "upper": true
+    },
+    "obj3_texte": {
+     "zone": "@19",
+     "max": 90
+    },
+    "obj3_detail": {
+     "zone": "@24",
+     "max": 90
+    }
+   }
+  },
+  "objectifs_detail": {
+   "usage": "4 objectifs ou actions détaillés à gauche, 3 indicateurs chiffrés à droite.",
+   "source": {
+    "family": "Objectifs Client - Details"
+   },
+   "variants": {
+    "Objectifs Client - Details 1": {
+     "label": "filet rose",
+     "ambiance": "orange"
+    },
+    "Objectifs Client - Details 2": {
+     "label": "filet violet",
+     "ambiance": "magenta"
+    },
+    "Objectifs Client - Details 3": {
+     "label": "filet turquoise",
+     "ambiance": "turquoise"
+    }
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 40
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 60
+    },
+    "point1_titre": {
+     "zone": "@15",
+     "max": 50
+    },
+    "point1_texte": {
+     "zone": "@16",
+     "max": 110
+    },
+    "point2_titre": {
+     "zone": "@17",
+     "max": 50
+    },
+    "point2_texte": {
+     "zone": "@18",
+     "max": 110
+    },
+    "point3_titre": {
+     "zone": "@19",
+     "max": 50
+    },
+    "point3_texte": {
+     "zone": "@20",
+     "max": 110
+    },
+    "point4_titre": {
+     "zone": "@21",
+     "max": 50
+    },
+    "point4_texte": {
+     "zone": "@22",
+     "max": 110
+    },
+    "kpi1": {
+     "zone": "@12",
+     "max": 4
+    },
+    "kpi1_libelle": {
+     "zone": "@13",
+     "max": 50
+    },
+    "kpi2": {
+     "zone": "@23",
+     "max": 4
+    },
+    "kpi2_libelle": {
+     "zone": "@24",
+     "max": 50
+    },
+    "kpi3": {
+     "zone": "@25",
+     "max": 4
+    },
+    "kpi3_libelle": {
+     "zone": "@26",
+     "max": 50
+    }
+   }
+  },
+  "deux_instances": {
+   "usage": "Deux instances ou dispositifs décrits en parallèle (comitologie, gouvernance).",
+   "source": {
+    "type": 43
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 45
+    },
+    "sous_titre": {
+     "zone": "Espace réservé du texte 3",
+     "max": 80
+    },
+    "bloc1_entete": {
+     "zone": "Rectangle 5",
+     "kind": "lines",
+     "max": 26,
+     "max_lines": 2,
+     "upper": 1,
+     "help": "[nom, fréquence], ex. [\"Comité projet\", \"Toutes les semaines\"]"
+    },
+    "bloc1_contenu": {
+     "zone": "Rectangle 4",
+     "kind": "lines",
+     "max": 70,
+     "max_lines": 16,
+     "anchor": "t",
+     "help": "structure : \"Objectifs :\", \"- point\"…, \"\", \"Participants : …\", \"Durée : …\", \"\", \"Livrables :\", \"- point\"…"
+    },
+    "bloc2_entete": {
+     "zone": "Rectangle 7",
+     "kind": "lines",
+     "max": 26,
+     "max_lines": 2,
+     "upper": 1
+    },
+    "bloc2_contenu": {
+     "zone": "Rectangle 6",
+     "kind": "lines",
+     "max": 70,
+     "max_lines": 16,
+     "anchor": "t"
+    }
+   }
+  },
+  "chiffres_cles": {
+   "usage": "3 chiffres clés (objectifs, critères, résultats) avec visuel.",
+   "source": {
+    "layout": "Key Numbers"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 40,
+     "help": "2 lignes"
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 45
+    },
+    "intro": {
+     "zone": "@11",
+     "max": 45
+    },
+    "chiffre1": {
+     "zone": "@12",
+     "max": 3
+    },
+    "unite1": {
+     "zone": "@13",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle1": {
+     "zone": "@14",
+     "max": 60
+    },
+    "chiffre2": {
+     "zone": "@15",
+     "max": 3
+    },
+    "unite2": {
+     "zone": "@16",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle2": {
+     "zone": "@17",
+     "max": 60
+    },
+    "chiffre3": {
+     "zone": "@18",
+     "max": 3
+    },
+    "unite3": {
+     "zone": "@19",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle3": {
+     "zone": "@20",
+     "max": 60
+    },
+    "note": {
+     "zone": "@10",
+     "max": 70,
+     "help": "sous le visuel"
+    }
+   }
+  },
+  "chiffres_cles_6": {
+   "usage": "6 chiffres clés en 2 colonnes (avant/après, deux périmètres).",
+   "source": {
+    "layout": "Key Numbers - 2 Columns"
+   },
+   "fields": {
+    "titre": {
+     "zone": "@0",
+     "max": 40
+    },
+    "sous_titre": {
+     "zone": "@32",
+     "max": 45
+    },
+    "col1_intro": {
+     "zone": "@11",
+     "max": 40
+    },
+    "chiffre1": {
+     "zone": "@12",
+     "max": 3
+    },
+    "unite1": {
+     "zone": "@13",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle1": {
+     "zone": "@14",
+     "max": 50
+    },
+    "chiffre2": {
+     "zone": "@15",
+     "max": 3
+    },
+    "unite2": {
+     "zone": "@16",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle2": {
+     "zone": "@17",
+     "max": 50
+    },
+    "chiffre3": {
+     "zone": "@18",
+     "max": 3
+    },
+    "unite3": {
+     "zone": "@19",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle3": {
+     "zone": "@20",
+     "max": 50
+    },
+    "col2_intro": {
+     "zone": "@21",
+     "max": 40
+    },
+    "chiffre4": {
+     "zone": "@22",
+     "max": 3
+    },
+    "unite4": {
+     "zone": "@23",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle4": {
+     "zone": "@24",
+     "max": 50
+    },
+    "chiffre5": {
+     "zone": "@25",
+     "max": 3
+    },
+    "unite5": {
+     "zone": "@26",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle5": {
+     "zone": "@27",
+     "max": 50
+    },
+    "chiffre6": {
+     "zone": "@28",
+     "max": 3
+    },
+    "unite6": {
+     "zone": "@29",
+     "max": 1,
+     "help": "1 caractère : %, j, k…"
+    },
+    "libelle6": {
+     "zone": "@30",
+     "max": 50
+    }
+   }
+  },
+  "niji_a_propos": {
+   "usage": "Niji en bref : métiers, effectifs, implantations.",
+   "source": {
+    "layout": "About"
+   },
+   "asis": true
+  },
+  "niji_digital_factory": {
+   "usage": "Savoir-faire de la Digital Factory Niji (devices, scrum, CI/CD, IA…).",
+   "source": {
+    "type": 15
+   },
+   "asis": true
+  },
+  "niji_engagements": {
+   "usage": "Engagements de développement Niji (sécurité, performance, maintenabilité, conformité).",
+   "source": {
+    "type": 16
+   },
+   "asis": true
+  },
+  "niji_clients": {
+   "usage": "Logos des clients de référence.",
+   "source": {
+    "layout": "Clients"
+   },
+   "asis": true
+  },
+  "niji_partenaires_retail": {
+   "usage": "Références retail, chiffres et témoignage.",
+   "source": {
+    "layout": "Retail Partners"
+   },
+   "asis": true
+  },
+  "niji_recompenses": {
+   "usage": "Prix et récompenses de Niji.",
+   "source": {
+    "layout": [
+     "Awards- Pink as hell/Orange peel",
+     "Awards - Magento/Mega Teel"
+    ]
+   },
+   "variants": {
+    "Awards- Pink as hell/Orange peel": {
+     "label": "rose-orangé",
+     "ambiance": "orange"
+    },
+    "Awards - Magento/Mega Teel": {
+     "label": "magenta-turquoise",
+     "ambiance": "magenta"
+    }
+   },
+   "asis": true
+  },
+  "niji_rse": {
+   "usage": "Engagements RSE de Niji.",
+   "source": {
+    "layout": "RSE"
+   },
+   "asis": true
+  },
+  "niji_certifications": {
+   "usage": "Certifications de Niji (EcoVadis, ISO 27001, Salesforce…).",
+   "source": {
+    "layout": "Certifications"
+   },
+   "asis": true
+  },
+  "niji_objectifs_intro": {
+   "usage": "Intercalaire « Niji vous accompagne sur vos 3 objectifs prioritaires », avant « objectifs ».",
+   "source": {
+    "layout": "Objectifs Client - Intro"
+   },
+   "asis": true
+  },
+  "conditions_generales": {
+   "usage": "Conditions générales de service Niji (3 diapos), en annexe des propositions commerciales.",
+   "source": {
+    "type": [
+     52,
+     53,
+     54
+    ]
+   },
+   "sequence": true,
+   "asis": true
+  },
+  "conclusion": {
+   "usage": "Dernière diapo « À très vite » avec visuel et contact.",
+   "source": {
+    "family": "Outro - Layout"
+   },
+   "variants": {
+    "Outro - Layout 1": {
+     "label": "silhouettes, turquoise",
+     "ambiance": "turquoise"
+    },
+    "Outro - Layout 2": {
+     "label": "porte lumineuse, orangé",
+     "ambiance": "orange"
+    },
+    "Outro - Layout 3": {
+     "label": "silhouette, violet",
+     "ambiance": "magenta"
+    }
+   },
+   "fields": {
+    "nom": {
+     "zone": "@10",
+     "max": 30
+    },
+    "fonction": {
+     "zone": "@11",
+     "max": 35
+    },
+    "email": {
+     "zone": "@12",
+     "max": 35
+    },
+    "telephone": {
+     "zone": "@13",
+     "max": 20
+    }
+   },
+   "titre_accessible": "À très vite"
+  },
+  "conclusion_titre": {
+   "usage": "Dernière diapo sur dégradé avec un message de fin personnalisé et le contact.",
+   "source": {
+    "family": "Outro - Layout+"
+   },
+   "variants": {
+    "Outro - Layout 5": {
+     "label": "dégradé turquoise-rose",
+     "ambiance": "turquoise"
+    },
+    "Outro - Layout 6": {
+     "label": "dégradé rose",
+     "ambiance": "magenta"
+    }
+   },
+   "fields": {
+    "message": {
+     "zone": "@0",
+     "max": 30
+    },
+    "nom": {
+     "zone": "@10",
+     "max": 30
+    },
+    "fonction": {
+     "zone": "@11",
+     "max": 35
+    },
+    "email": {
+     "zone": "@12",
+     "max": 35
+    },
+    "telephone": {
+     "zone": "@13",
+     "max": 20
+    }
+   },
+   "titre_accessible": "Conclusion"
+  }
+ },
+ "ignored_layouts": {
+  "Full Image": "image à fournir",
+  "Team - With description": "photos à fournir",
+  "Team - No description": "photos à fournir",
+  "Team - CV": "photo à fournir",
+  "Images + Infos": "images à fournir",
+  "Text and Images": "images à fournir",
+  "Title + Image + Annotations": "image à fournir",
+  "Prototypes": "captures à fournir",
+  "1_Pyramid - Images": "images à fournir",
+  "Key Numbers - Editable Image": "image à fournir",
+  "Key Numbers 2 - Fully Editable": "image à fournir",
+  "Title + Small explanation 2": "image à fournir",
+  "Title + body copy - Left": "image à fournir",
+  "One liners, Quotes, or small texts - Grayscale": "image à fournir",
+  "Fiche Reference": "photo et logo client à fournir",
+  "Fiche Reference + Chiffres clés": "photo et logo client à fournir",
+  "Key Numbers + Brands": "logos à fournir",
+  "Outro - Editable Picture": "image à fournir",
+  "Editable Intro 3": "image à fournir",
+  "Intercalaire-Niveau1_Editable": "image à fournir",
+  "Intercalaire-Niveau1_Editable2": "image à fournir",
+  "1_Intercalaire-Niveau1_Editable3": "image à fournir",
+  "About-Editable": "version modifiable de « About »",
+  "Clients Editable": "logos à fournir",
+  "RSE-Editable": "version modifiable de « RSE »",
+  "Certifications - Editable": "logos à fournir",
+  "Detailed Section - Editable Background Color": "couleur libre, hors charte",
+  "Detailed Section 2 - Editable Background Color": "couleur libre, hors charte",
+  "Objective 1": "zones différentes selon la variante",
+  "Objective 2": "zones différentes selon la variante",
+  "Objective 3": "zones différentes selon la variante",
+  "Empty slide": "vide",
+  "Blank": "vide",
+  "Title and text": "doublon de « Titre et texte »",
+  "Detailed Section - Orange/Pink": "panneau = motif graphique (image) à fournir",
+  "Detailed Section - Magento/Red": "panneau = motif graphique (image) à fournir",
+  "Detailed Section - Teel/Sweet escape": "panneau = motif graphique (image) à fournir"
+ }
+}

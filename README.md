@@ -12,16 +12,17 @@ Serveur MCP (HTTP streamable) qui transforme les réponses de l'IA en **Word, Ex
 | `save_word_cadre` | `nom`, `parametres` | enregistre un cadre client réutilisable (police, taille, marges, pages…) |
 | `create_excel` | `title`, `sheets:[{name, rows}]` (1re ligne = en-têtes → tableau Excel) | .xlsx |
 | `get_presentation_catalog` | – | diapos PowerPoint autorisées : usage, champs, limites, règles de rédaction (à appeler avant `create_powerpoint`) |
-| `create_powerpoint` | `title`, `slides:[{model, fields, variante, notes}]`, `ambiance` | .pptx + liste des dépassements à corriger |
+| `create_powerpoint` | `title`, `slides:[{model, fields, variante, notes}]`, `ambiance`, `dry_run` | .pptx + liste des dépassements à corriger (`dry_run` : vérification seule, sans fichier) |
 | `refresh_template` | `type` (`pptx` ou `docx`) | épingle le dernier modèle PowerPoint ou Word de la source et refait l'analyse (sur demande explicite) |
 | `add_slides_link` | – | lien de dépôt (24 h) pour ajouter des diapos de l'utilisateur à son catalogue |
 | `get_slides_report` | `import_id` | écart au modèle de chaque diapo déposée : score, niveau, alertes, champs proposés |
 | `add_user_slides` | `import_id`, `slides:[{diapo, nom, usage, champs}]`, `forcer` | ajoute des diapos au catalogue de l'utilisateur (« Mes diapos ») |
 | `remove_user_slide` | `nom` | retire une diapo de « Mes diapos » |
 | `list_slide_types` | `layouts` (optionnel) | administration : inventaire brut des zones du modèle épinglé |
+| `layout_catalog` | – | administration : .pptx avec une diapo par disposition (tous masques), zones étiquetées `@idx` comme dans `catalog/pptx.json` |
 | `list_templates` | – | modèles disponibles / utilisé |
 
-`template_prefix` (optionnel) permet de choisir une famille de modèles (ex. `Note_`, `Rapport_`). Le fichier retourné est un lien de téléchargement à usage temporaire (`FILE_TTL`).
+`template_prefix` (optionnel) choisit une famille de modèles par une partie de leur nom (ex. `Proposition`, `Theme`) ; sans lui, `DEFAULT_TEMPLATE_<TYPE>` s'applique s'il correspond à un fichier. Dans la famille retenue, le modèle le plus récent est pris : année du nom, puis version `vX.Y`, puis date de modification. Le fichier retourné est un lien de téléchargement à usage temporaire (`FILE_TTL`).
 
 ## Fonctionnement
 - **Source des modèles** : dossier SharePoint via Microsoft Graph (ou `TEMPLATE_DIR`), fichier le plus récemment modifié par type ; cache invalidé par eTag. Excel l'utilise à chaque génération ; PowerPoint et Word seulement à l'épinglage (`refresh_template`, `python server.py bundle`).
@@ -149,6 +150,7 @@ POST https://graph.microsoft.com/v1.0/sites/{site-id}/permissions
 | `PUBLIC_BASE_URL` | `http://localhost:8000` | Base des liens de téléchargement |
 | `FILE_TTL` | `3600` | Durée de validité des fichiers générés (s) |
 | `TEMPLATE_CACHE` | `300` | Durée du cache des modèles (s) |
+| `DEFAULT_TEMPLATE_PPTX`, `DEFAULT_TEMPLATE_DOCX`, `DEFAULT_TEMPLATE_XLSX` | – | Famille de modèles par défaut (partie du nom, ex. `Proposition_commerciale`) quand le dossier en contient plusieurs |
 | `MAX_INPUT` | `500000` | Taille max. des entrées (caractères) |
 | `MAX_UPLOAD` | `52428800` | Taille max. d'une présentation déposée (octets) |
 | `DOC_LANG` | `fr-FR` | Langue des documents |
@@ -199,12 +201,32 @@ mcpServers:
 ```
 Si l'instance LibreChat est hébergée par un tiers, demander à l'administrateur d'ajouter ce bloc (ou d'autoriser les serveurs MCP utilisateurs) et d'ouvrir le flux réseau vers le serveur.
 
-## Test local sans SharePoint
-```bash
-pip install -r requirements.txt
-TEMPLATE_DIR=./modeles CATALOG_DIR=./.catalog MCP_API_KEY=test python server.py
-```
-Le rendu PowerPoint et Word (cadre Niji) suppose les polices N27 installées sur le poste qui ouvre le fichier (elles ne sont pas embarquées).
+## Installation en local (poste de travail)
+Pour tester ou faire évoluer le serveur sur un poste. L'instance LibreChat hébergée de l'entreprise ne peut pas joindre `localhost` : pour elle, déployer avec Docker (ci-dessus) sur une machine qu'elle peut joindre.
+
+1. **Prérequis** : Python 3.11 ou plus (ou Docker Desktop) ; les modèles sur le poste, idéalement le dossier SharePoint des modèles synchronisé avec OneDrive (bouton « Synchroniser »), ce qui évite toute configuration Entra ID ; les polices N27 installées pour voir le rendu.
+2. **Installation**
+   ```bash
+   git clone https://github.com/Bzhdha/mcp-office.git && cd mcp-office
+   python -m venv .venv
+   source .venv/bin/activate          # Windows PowerShell : .venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   ```
+3. **Lancement** (adapter le chemin du dossier synchronisé)
+   ```bash
+   export TEMPLATE_DIR="$HOME/Library/CloudStorage/OneDrive-Niji/Modeles" CATALOG_DIR=./.catalog OUTPUT_DIR=./.out
+   export MCP_API_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(32))") PUBLIC_BASE_URL=http://localhost:8000
+   export DEFAULT_TEMPLATE_PPTX=Proposition_commerciale
+   python server.py
+   ```
+   Windows PowerShell : `$env:TEMPLATE_DIR="$env:USERPROFILE\Niji\Modeles - Documents"`, idem pour les autres variables, puis `python server.py`.
+4. **Vérification**
+   - `http://localhost:8000/health` répond `{"ok":true}`.
+   - MCP Inspector : `npx @modelcontextprotocol/inspector`, transport **Streamable HTTP**, URL `http://localhost:8000/mcp`, en-tête `Authorization: Bearer <MCP_API_KEY>`. Appeler `list_templates`, `get_presentation_catalog`, puis `create_powerpoint` avec `dry_run=true`.
+   - `layout_catalog` génère le catalogue visuel des dispositions du modèle épinglé.
+5. **Clients** : LibreChat lancé sur le même poste → `url: http://host.docker.internal:8000/mcp` ; tout client MCP HTTP (Claude Desktop, VS Code…) → `http://localhost:8000/mcp` avec l'en-tête `Authorization`.
+
+Le rendu PowerPoint et Word (cadre Niji) suppose les polices N27 installées sur le poste qui ouvre le fichier (elles ne sont pas embarquées). Les modèles d'entreprise (C2) ne sont jamais versionnés (`.gitignore`).
 
 ## TODO
 

@@ -39,11 +39,19 @@ def _list():
  h={"Authorization":"Bearer "+_gtoken()};u=f"{G}/sites/{SITE}/drive/root:/{FOLDER.strip('/')}:/children?$select=id,name,lastModifiedDateTime,eTag,file&$top=999";items=[]
  while u:r=httpx.get(u,headers=h,timeout=20);r.raise_for_status();j=r.json();items+=j["value"];u=j.get("@odata.nextLink")
  return[{"name":i["name"],"modified":i["lastModifiedDateTime"],"id":i["id"],"etag":i["eTag"]}for i in items if"file"in i]
+def _ver(n,mod):
+ """Clé « plus récent » : année du nom, puis version vX.Y, puis date de modification."""
+ y=re.search(r"(?<!\d)(20\d\d)(?!\d)",n);v=re.search(r"[vV](\d+(?:\.\d+)*)",n)
+ return(int(y[1])if y else 0,tuple(map(int,v[1].split(".")))if v else(),str(mod))
 def latest(kind,prefix=""):
- """Dernier modèle modifié pour le type (préfixe de nom optionnel)."""
- c=[f for f in _list()if f["name"].lower().endswith(EXT[kind])and not f["name"].startswith("~$")and f["name"].lower().startswith(prefix.lower())]
- if not c:raise ValueError(f"Aucun modèle {kind} trouvé")
- f=max(c,key=lambda x:x["modified"]);k=(kind,prefix);hit=_tpl.get(k)
+ """Dernier modèle du type. `prefix` : partie du nom (famille de modèles), sinon DEFAULT_TEMPLATE_<TYPE> s'il correspond à un fichier."""
+ a=[f for f in _list()if f["name"].lower().endswith(EXT[kind])and not f["name"].startswith("~$")]
+ if not prefix:
+  prefix=E(f"DEFAULT_TEMPLATE_{kind.upper()}","")
+  if not any(prefix.lower()in f["name"].lower()for f in a):prefix=""
+ c=[f for f in a if prefix.lower()in f["name"].lower()]
+ if not c:raise ValueError(f"Aucun modèle {kind} correspondant à « {prefix} »")
+ f=max(c,key=lambda x:_ver(x["name"],x["modified"]));k=(kind,prefix);hit=_tpl.get(k)
  if hit and hit[0]==f["etag"]and hit[2]>time.time():return f["name"],hit[1]
  if LOCAL:b=Path(f["id"]).read_bytes()
  else:r=httpx.get(f"{G}/sites/{SITE}/drive/items/{f['id']}/content",headers={"Authorization":"Bearer "+_gtoken()},follow_redirects=True,timeout=60);r.raise_for_status();b=r.content
@@ -201,8 +209,20 @@ def _dup(p,src):
  m={}
  for rel in list(src.part.rels._rels.values()):
   if rel.reltype.endswith(("/slideLayout","/notesSlide")):continue
-  m[rel.rId]=s.part.rels.get_or_add_ext_rel(rel.reltype,rel.target_ref)if rel.is_external else s.part.relate_to(rel.target_part,rel.reltype)
+  m[rel.rId]=s.part.rels.get_or_add_ext_rel(rel.reltype,rel.target_ref)if rel.is_external else s.part.relate_to(_clone(rel.target_part,p.part.package)if rel.reltype.endswith(CLONE)else rel.target_part,rel.reltype)
  return _copy_shapes(s,src,m)
+CLONE=("/chart","/oleObject","/package","/diagramData","/diagramDrawing")
+def _clone(part,pkg):
+ """Copie une part (graphique, classeur embarqué…) et ses dépendances : chaque copie de diapo a ses propres données."""
+ t=re.sub(r"\d+(?=\.\w+$)","%d",str(part.partname));t=t if"%d"in t else re.sub(r"(?=\.\w+$)","%d",t)
+ n=type(part).load(pkg.next_partname(t),part.content_type,pkg,part.blob);m={}
+ for rid,rel in list(part.rels._rels.items()):m[rid]=n.rels.get_or_add_ext_rel(rel.reltype,rel.target_ref)if rel.is_external else n.relate_to(_clone(rel.target_part,pkg),rel.reltype)
+ if hasattr(n,"_element"):
+  for x in n._element.iter():
+   for a in("embed","id","link"):
+    v=x.get(f"{{{RNS}}}{a}")
+    if v in m:x.set(f"{{{RNS}}}{a}",m[v])
+ return n
 def _import(p,src):
  """Copie une diapo d'une AUTRE présentation (diapo utilisateur) : même disposition du modèle, images et liens externes recopiés."""
  s=p.slides.add_slide(_layout(p,src.slide_layout.name));tree=s.shapes._spTree
@@ -268,7 +288,14 @@ def _fill(tf,lines,fonts=("","")):
      if fonts[0]and fonts[0]!=fonts[1]:r.font.name=fonts[0]
      else:r.font.bold=True
 def _table(t,rows,fonts=("","")):
- nc=len(t.columns)
+ nc=len(t.columns);w=max(map(len,rows))if rows else nc
+ if 0<w<nc and not t._tbl.xpath(".//a:tc[@gridSpan or @hMerge]"):
+  g=t._tbl.tblGrid;cols=g.findall(pq("a:gridCol"));tot=sum(int(c.get("w"))for c in cols);kw=sum(int(c.get("w"))for c in cols[:w])
+  for c in cols[w:]:g.remove(c)
+  for c in cols[:w]:c.set("w",str(int(c.get("w"))*tot//kw))
+  for tr in t._tbl.tr_lst:
+   for tc in tr.findall(pq("a:tc"))[w:]:tr.remove(tc)
+  nc=w
  while len(t._tbl.tr_lst)<len(rows):t._tbl.append(deepcopy(t._tbl.tr_lst[-1]))
  for x in t._tbl.tr_lst[len(rows):]:t._tbl.remove(x)
  for ri,r in enumerate(rows):
@@ -767,12 +794,29 @@ def list_slide_types(template_prefix:str="",layouts:bool=False)->str:
  if layouts:r+="\n\nDispositions (source « layout », masque n) :\n"+"\n".join(f"- {l['layout']} (masque {l.get('master',1)}) | "+("; ".join(f"{z['zone']} ({z['kind']}: {z['exemple'][:30]!r})"for z in l["zones"])or"mise en page figée")for l in inv["layouts"])
  return r
 @mcp.tool()
-def create_powerpoint(ctx:Context,title:str,slides:list[dict],ambiance:str="",filename:str="",template_prefix:str="")->str:
+def layout_catalog(template_prefix:str="")->str:
+ """(Administration) .pptx « catalogue » du modèle épinglé : une diapo par disposition (tous masques), chaque zone étiquetée « @idx » comme dans catalog/pptx.json. Sert à choisir les dispositions et à rédiger les modèles."""
+ c=catalog(template_prefix);p=Presentation(_untemplate(c["bytes"]));orig=list(p.slides);n=0
+ for mi,m in enumerate(p.slide_masters,1):
+  for l in m.slide_layouts:
+   s=p.slides.add_slide(l);n+=1
+   for sh in list(s.placeholders):
+    t=int(sh.placeholder_format.type)
+    if t==18 or not sh.has_text_frame:continue
+    sh.text_frame.text=f"{l.name} (masque {mi})"if t in(1,3)else f"@{sh.placeholder_format.idx}"
+ sl=p.slides._sldIdLst
+ for s in orig:
+  for x in list(sl):
+   if p.part.related_part(x.rId)is s.part:p.part.drop_rel(x.rId);sl.remove(x)
+ return _ret("pptx","Catalogue dispositions",c["template"],p)+f" ({n} dispositions)"
+@mcp.tool()
+def create_powerpoint(ctx:Context,title:str,slides:list[dict],ambiance:str="",filename:str="",template_prefix:str="",dry_run:bool=False)->str:
  """Crée une présentation (.pptx) strictement conforme au modèle d'entreprise. Appeler d'abord get_presentation_catalog.
  `slides`: [{"model":"couverture","fields":{"titre":"…"}},…] dans l'ordre voulu ; "variante": n impose une variante visuelle ; **mot** = mise en valeur (police d'accent) ; « \\n » dans un texte = nouveau paragraphe ; "notes" = notes orateur.
  `ambiance` : couleur dominante du document (cf. catalogue) ; les variantes (couverture, intercalaires…) sont choisies dans cette ambiance et alternées.
- Les dépassements de limites sont signalés : corriger le contenu et regénérer si besoin."""
+ Les dépassements de limites sont signalés : corriger le contenu et regénérer si besoin. `dry_run`=true : vérifie le plan et renvoie les dépassements sans générer de fichier."""
  _chk(title,slides);w=[];tn,p=make_pptx(title,slides,template_prefix=template_prefix,warn=w,ambiance=ambiance,uid=_uid(ctx))
+ if dry_run:return f"Plan vérifié avec « {tn} » ({len(p.slides)} diapos)."+("\n\nÀ corriger :\n- "+"\n- ".join(w)if w else" Aucun dépassement.")
  return _ret("pptx",filename or title,tn,p)+("\n\nÀ corriger :\n- "+"\n- ".join(w)if w else"")
 
 @mcp.tool()

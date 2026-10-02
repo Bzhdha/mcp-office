@@ -209,27 +209,83 @@ Si l'instance LibreChat est hébergée par un tiers, demander à l'administrateu
 ## Installation en local (poste de travail)
 Pour tester ou faire évoluer le serveur sur un poste. L'instance LibreChat hébergée de l'entreprise ne peut pas joindre `localhost` : pour elle, déployer avec Docker (ci-dessus) sur une machine qu'elle peut joindre.
 
-1. **Prérequis** : Python 3.11 ou plus (ou Docker Desktop) ; les modèles sur le poste, idéalement le dossier SharePoint des modèles synchronisé avec OneDrive (bouton « Synchroniser »), ce qui évite toute configuration Entra ID ; les polices N27 installées pour voir le rendu.
-2. **Installation**
-   ```bash
-   git clone https://github.com/Bzhdha/mcp-office.git && cd mcp-office
-   python -m venv .venv
-   source .venv/bin/activate          # Windows PowerShell : .venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   ```
-3. **Lancement** (adapter le chemin du dossier synchronisé)
-   ```bash
-   export TEMPLATE_DIR="$HOME/Library/CloudStorage/OneDrive-Niji/Modeles" CATALOG_DIR=./.catalog OUTPUT_DIR=./.out
-   export MCP_API_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(32))") PUBLIC_BASE_URL=http://localhost:8000
-   export DEFAULT_TEMPLATE_PPTX=Proposition_commerciale
-   python server.py
-   ```
-   Windows PowerShell : `$env:TEMPLATE_DIR="$env:USERPROFILE\Niji\Modeles - Documents"`, idem pour les autres variables, puis `python server.py`.
-4. **Vérification**
-   - `http://localhost:8000/health` répond `{"ok":true}`.
-   - MCP Inspector : `npx @modelcontextprotocol/inspector`, transport **Streamable HTTP**, URL `http://localhost:8000/mcp`, en-tête `Authorization: Bearer <MCP_API_KEY>`. Appeler `list_templates`, `get_presentation_catalog`, puis `create_powerpoint` avec `dry_run=true`.
-   - `layout_catalog` génère le catalogue visuel des dispositions du modèle épinglé.
-5. **Clients** : LibreChat lancé sur le même poste → `url: http://host.docker.internal:8000/mcp` ; tout client MCP HTTP (Claude Desktop, VS Code…) → `http://localhost:8000/mcp` avec l'en-tête `Authorization`.
+### 1. Prérequis
+- **Python 3.11** ou plus (`python --version`), ou **Docker Desktop** (variante 4 bis).
+- **Node.js 18+** pour l'outil de test MCP Inspector (`npx`).
+- **Polices N27** installées, pour voir le rendu dans PowerPoint et Word.
+- **Modèles d'entreprise** dans un dossier du poste (`TEMPLATE_DIR`). Le plus simple : synchroniser le dossier SharePoint des modèles avec OneDrive (bouton « Synchroniser »), ce qui évite toute configuration Entra ID. Le dossier doit contenir :
+
+  | Type | Fichier attendu | Sans lui |
+  |---|---|---|
+  | PowerPoint | modèle dont le nom contient `DEFAULT_TEMPLATE_PPTX` (ex. `C2-Niji-Proposition commerciale type 2026-v3.2.potx`) | outils PowerPoint en erreur |
+  | Word | modèle dont le nom contient `C2-Niji-Word` (`prefixe_modele` de `catalog/docx.json`) : le **vrai** modèle Niji, le moteur Word s'appuie sur sa structure | outils Word en erreur (« Aucun modèle docx correspondant à « C2-Niji-Word » ») |
+  | Excel | un `.xltx` ou `.xlsx` | `create_excel` en erreur |
+
+  Alternative sans dossier de modèles : récupérer auprès d'un administrateur le paquet `catalog/bundle/` (modèles et analyse, hors Git) et le copier dans `catalog/bundle/` du dépôt.
+
+### 2. Installation
+macOS / Linux :
+```bash
+git clone https://github.com/Bzhdha/mcp-office.git && cd mcp-office
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+```
+Windows (PowerShell) :
+```powershell
+git clone https://github.com/Bzhdha/mcp-office.git; cd mcp-office
+python -m venv .venv; .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+### 3. Lancement
+macOS / Linux (adapter le chemin du dossier synchronisé) :
+```bash
+export TEMPLATE_DIR="$HOME/Library/CloudStorage/OneDrive-Niji/Modeles"
+export DEFAULT_TEMPLATE_PPTX=Proposition_commerciale
+export CATALOG_DIR=./.catalog OUTPUT_DIR=./.out PUBLIC_BASE_URL=http://localhost:8000
+export MCP_API_KEY=$(python -c "import secrets;print(secrets.token_urlsafe(32))"); echo "Clé : $MCP_API_KEY"
+python server.py
+```
+Windows (PowerShell) :
+```powershell
+$env:TEMPLATE_DIR="$env:USERPROFILE\Niji\Modeles - Documents"
+$env:DEFAULT_TEMPLATE_PPTX="Proposition_commerciale"
+$env:CATALOG_DIR=".\.catalog"; $env:OUTPUT_DIR=".\.out"; $env:PUBLIC_BASE_URL="http://localhost:8000"
+$env:MCP_API_KEY=python -c "import secrets;print(secrets.token_urlsafe(32))"; "Clé : $env:MCP_API_KEY"
+python server.py
+```
+- Le serveur écoute sur `http://localhost:8000` ; arrêt par `Ctrl+C`.
+- Garder la clé affichée : elle est demandée par les clients MCP.
+- Le premier appel PowerPoint ou Word analyse et épingle le modèle (quelques secondes) dans `.catalog/`. Pour repartir d'un modèle plus récent : appeler `refresh_template`, ou supprimer `.catalog/`.
+- Les fichiers générés sont dans `.out/`, téléchargeables par les liens renvoyés pendant `FILE_TTL` (1 h).
+
+### 4. Vérification
+1. `http://localhost:8000/health` répond `{"ok":true}`.
+2. `npx @modelcontextprotocol/inspector`, puis dans l'interface : transport **Streamable HTTP**, URL `http://localhost:8000/mcp`, en-tête `Authorization` = `Bearer <clé>`, **Connect**.
+3. Onglet *Tools* : `list_templates` (modèles trouvés et retenus), `get_presentation_catalog`, `create_powerpoint` avec `dry_run=true` puis sans (lien de téléchargement), `get_word_catalog`, `create_excel`.
+4. `layout_catalog` : catalogue visuel des dispositions du modèle épinglé.
+
+### 4 bis. Variante Docker (même résultat, sans Python sur le poste)
+```bash
+cp .env.example .env    # MCP_API_KEY, PUBLIC_BASE_URL=http://localhost:8000, TEMPLATE_DIR=/templates, DEFAULT_TEMPLATE_PPTX
+# docker-compose.yml : décommenter le montage ./modeles:/templates:ro (ou y mettre le chemin du dossier synchronisé)
+docker compose up -d --build && curl http://127.0.0.1:8000/health
+```
+Le port n'est ouvert que sur `127.0.0.1` (poste seul). `docker compose down` pour arrêter, `docker compose down -v` pour aussi vider le modèle épinglé.
+
+### 5. Brancher un client
+- **LibreChat lancé sur le même poste** (Docker) : bloc `mcpServers` ci-dessus avec `url: http://host.docker.internal:8000/mcp`. L'en-tête `X-User-Id` est facultatif : sans lui, le catalogue « Mes diapos » est commun.
+- **Claude Desktop, VS Code ou tout client MCP HTTP** : URL `http://localhost:8000/mcp` et en-tête `Authorization: Bearer <clé>`.
+
+### 6. Problèmes fréquents
+| Symptôme | Cause et solution |
+|---|---|
+| `address already in use` au lancement | Le port 8000 est pris (autre instance encore lancée ?) : l'arrêter, ou `PORT=8001` et `PUBLIC_BASE_URL=http://localhost:8001`. |
+| `401 unauthorized` | En-tête `Authorization: Bearer <clé>` absent ou clé différente de `MCP_API_KEY` (une nouvelle clé est générée à chaque lancement avec la commande ci-dessus : la fixer dans `.env` ou le profil pour la garder). |
+| « Aucun modèle docx correspondant à « C2-Niji-Word » » | Modèle Word absent de `TEMPLATE_DIR` ou mal nommé (voir tableau des prérequis). |
+| Modèle PowerPoint inattendu | `DEFAULT_TEMPLATE_PPTX` absent ou trop large : vérifier avec `list_templates`, puis `refresh_template` (ou supprimer `.catalog/`). |
+| Windows : `Activate.ps1` bloqué | `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`, puis relancer l'activation. |
+| Lien de téléchargement mort | Lien expiré (`FILE_TTL`) ou `PUBLIC_BASE_URL` différent de l'adresse réelle du serveur. |
 
 Le rendu PowerPoint et Word (cadre Niji) suppose les polices N27 installées sur le poste qui ouvre le fichier (elles ne sont pas embarquées). Les modèles d'entreprise (C2) ne sont jamais versionnés (`.gitignore`).
 
